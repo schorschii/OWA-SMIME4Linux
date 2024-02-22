@@ -1,0 +1,9 @@
+{
+    "name":  "com.microsoft.outlook.smime.chromenativeapp",
+    "description":  "OWA-SMIME4Linux: OWA support for S/MIME encrypted emails, Linux implementation.",
+    "path":  "/usr/bin/owa-smime.py",
+    "type":  "stdio",
+    "allowed_origins":  [
+                            "chrome-extension://maafgiompdekodanheihhgilkjchcakm/"
+                        ]
+}
