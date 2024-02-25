@@ -8,19 +8,19 @@ import traceback
 import atexit
 import struct
 import json
+import base64
 import random, string
 import sys, os
 
-from M2Crypto import BIO, Rand, SMIME, X509, EVP
-from OpenSSL import crypto
 from cryptography import x509
-from cryptography.x509.oid import NameOID
 from cryptography.hazmat.backends import default_backend
 
-LOGFILE = 'native.log'
+LOGFILE = 'native.log' # use None for no logging
+
 SMIME_PROTOCOL_NAMESPACE = ':#Microsoft.Exchange.Clients.BrowserExtension.Smime'
 SMIME_CONTROL_NAMESPACE  = ':#Microsoft.Exchange.Clients.Smime'
 SMIME_CONTROL_VERSION    = '4.0700.19.19.814.1'
+
 
 def log(text):
     if(LOGFILE):
@@ -28,7 +28,9 @@ def log(text):
             logfile.write(text+"\n\n")
 
 def decrypt_smime(smime_content):
-    header = 'Content-Type: application/x-pkcs7-mime; smime-type=enveloped-data; name="smime.p7m"\n\n'
+    header = ''
+    if(not smime_content.lower().startswith('content-type:')):
+        header = 'Content-Type: application/x-pkcs7-mime; smime-type=enveloped-data; name="smime.p7m"\n\n'
     smime_message = bytes(header + smime_content, encoding='utf-8')
 
     cert_path = str(Path.home())+'/.config/owa-smime4linux/cert.pem'
@@ -37,32 +39,55 @@ def decrypt_smime(smime_content):
 
     proc = subprocess.Popen(
         ['openssl', 'smime', '-decrypt', '-recip', cert_path],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.PIPE
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE
     )
-    decrypted = proc.communicate(input=smime_message)[0]
+    output = proc.communicate(input=smime_message)
+    strError = output[1].decode('utf-8')
+    if(strError.strip() != ''):
+        log('!!! OpenSSL stderr: ' + strError)
+
+    return output[0].decode()
+
+def verify_smime(smime_content):
+    if(not isinstance(smime_content, bytes)):
+        smime_content = bytes(smime_content, encoding='utf-8')
 
     tmpFilePathSigner = '/tmp/signer.pem'
     proc = subprocess.Popen(
         ['openssl', 'smime', '-verify', '-signer', tmpFilePathSigner],
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.PIPE
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE
     )
-    verified = proc.communicate(input=decrypted)[0]
+    output = proc.communicate(input=smime_content)
+    strError = output[1].decode('utf-8')
+    if(strError.strip() != ''):
+        log('!!! OpenSSL stderr: ' + strError)
 
     signer_cert = ''
     with open(tmpFilePathSigner, 'r') as f:
         signer_cert = f.read()
-    return verified.decode(), signer_cert
+    return output[0].decode(), signer_cert
 
 def parse_multipart_body(body):
-    lines = body.replace("\r\n", "\n").strip().split("\n", 1)
+    lines = body.replace("\r\n", "\n").strip().split("\n")
     if(not lines[0].lower().startswith('content-type: multipart')):
-        return body
+        return body, 'TEXT'
+
+    # get the multipart boundary
     boundary = None
-    for item in lines[0].split(';'):
-        if(item.strip().lower().startswith('boundary=')):
-            boundary = item.strip()[9:].strip('"')
+    line = 0
+    while True:
+        for item in lines[line].split(';'):
+            if(item.strip().lower().startswith('boundary=')):
+                boundary = item.strip()[9:].strip('"')
+                line = None
+        # content-type header with boundary may be broken into multiple lines
+        if(line != None and (lines[line+1].startswith(' ') or lines[line+1].startswith('\t'))):
+            line += 1
+        else: break
+
+    # iterate over multiparts and return HTML if avail, TEXT as fallback
     text_plain = ''
-    for part in lines[1].split(boundary):
+    for part in body.split(boundary):
         part_parts = part.replace("\r\n", "\n").strip().split("\n\n", 1)
         if(len(part_parts) != 2): continue
         part_headers = part_parts[0]
@@ -78,7 +103,7 @@ def parse_multipart_body(body):
                     part_body = quopri.decodestring(part_parts[1]).decode('utf-8')
         if(part_body_type == 'text/html'):
             return part_body, 'HTML'
-        else:
+        elif(part_body.strip() != ''):
             text_plain = part_body
     return text_plain, 'TEXT'
 
@@ -123,14 +148,28 @@ def handle_partial_data(type, message):
                 "Status": 1
             }
 
-        # request to decrypt a SMIME message
+        # request to parse a SMIME message
         if(msg['__type'] == 'CreateMessageFromSmimeParams'+SMIME_PROTOCOL_NAMESPACE):
             smime_content = msg['Smime'].strip()
             if(len(msg['Smime'].split(',')) > 1):
-                smime_content = msg['Smime'].split(',')[1]#.replace("\r\n", "\n").replace("\n", "").strip()
-            decrypted, signer_cert = decrypt_smime(smime_content)
-            body, body_type = parse_multipart_body(decrypted)
+                payload = msg['Smime'].split(',')
+                smime_content_type = payload[0]
+                smime_content = payload[1]#.replace("\r\n", "\n").replace("\n", "").strip()
 
+            # decrypt and verify
+            if(smime_content_type.startswith('data:application/pkcs7-mime')):
+                decrypted = decrypt_smime(smime_content)
+                verified, signer_cert = verify_smime(decrypted)
+            # verify only
+            elif(smime_content_type.startswith('data:multipart/signed')):
+                verified, signer_cert = verify_smime(base64.b64decode(smime_content))
+            else:
+                raise Exception('Unknown content type: '+smime_content_type)
+
+            # get message body
+            body, body_type = parse_multipart_body(verified)
+
+            # get signer cert
             cert = x509.load_pem_x509_certificate(signer_cert.encode('ascii'), default_backend())
             signer_cert = (signer_cert.strip()
                 .lstrip('-----BEGIN CERTIFICATE-----')

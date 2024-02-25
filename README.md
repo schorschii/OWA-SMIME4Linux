@@ -1,12 +1,14 @@
 # OWA-SMIME4Linux
-This is a Linux implementation of the Outlook Web App SMIME control for Linux. Originally, SMIME functionality in OWA is only available for Windows. Currently, only mail decryption is implemented.
+This is a Linux implementation of the Outlook Web App SMIME control for Linux. Originally, SMIME functionality in OWA is only available for Windows. **Currently, only mail decryption is implemented.**
 
-OWA uses [Native Messaging](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/Native_messaging) to communicate with a small piece of software installed on the user's computer to do SMIME mail decryption. The browser hands the decrypted SMIME ciphertext to this software which decrypts it using the certificate from the local cert store, and returns it to the website so that the plaintext can be displayed.
+OWA uses [Native Messaging](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/Native_messaging) to communicate with a small piece of software installed on the user's computer to do SMIME mail de-/encryption. The browser hands the SMIME ciphertext to this software which decrypts it using the certificate from the local cert store, and returns it to the website so that the plaintext can be displayed (or vice versa when sending encrypted mails).
 
 Native Messaging can only be initiated by a browser extension, that's why beside the locally installed SMIME handler, a browser extension is necessary. This Linux implementation works flawlessly with the original "Microsoft S/MIME" extension for Chrome, so there is no special or modified extension needed. Note that this browser extension is only [compatible with Chrome/Chromium](https://learn.microsoft.com/en-us/exchange/policy-and-compliance/smime/smime-settings-for-owa?view=exchserver-2019) (and IE + Edge, but they do not apply to Linux).
 
+OWA-SMIME4Linux internally calls the `openssl` command line utility for de-/encrypting and verifying the email payload.
+
 ## Installation
-1. Install dependencies: `apt install python3-openssl python3-m2crypto python3-cryptography`
+1. Install dependencies: `apt install openssl python3-cryptography`
 2. Copy `owa-smime.py` into `/usr/bin/` and make it executable.
 3. Register the OWA-SMIME4Linux Native Messaging app by copying `com.microsoft.outlook.smime.chromenativeapp.json` into:
    - `/etc/opt/chrome/native-messaging-hosts/` for Chrome
