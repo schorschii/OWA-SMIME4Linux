@@ -38,7 +38,7 @@ def decrypt_smime(smime_content):
         raise Exception(cert_path+' does not exist!')
 
     proc = subprocess.Popen(
-        ['openssl', 'smime', '-decrypt', '-recip', cert_path],
+        ['openssl', 'cms', '-decrypt', '-recip', cert_path],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE
     )
     output = proc.communicate(input=smime_message)
@@ -48,42 +48,54 @@ def decrypt_smime(smime_content):
 
     return output[0].decode()
 
-def verify_smime(smime_content):
+def verify_smime(smime_content, noverify=False):
     if(not isinstance(smime_content, bytes)):
         smime_content = bytes(smime_content, encoding='utf-8')
 
     tmpFilePathSigner = '/tmp/signer.pem'
+    if(os.path.isfile(tmpFilePathSigner)):
+        os.unlink(tmpFilePathSigner)
+
     proc = subprocess.Popen(
-        ['openssl', 'smime', '-verify', '-signer', tmpFilePathSigner],
+        ['openssl', 'smime', '-verify', '-signer', tmpFilePathSigner, '-noverify' if noverify else ''],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE
     )
     output = proc.communicate(input=smime_content)
     strError = output[1].decode('utf-8')
     if(strError.strip() != ''):
-        log('!!! OpenSSL stderr: ' + strError)
+        log('!!!x OpenSSL stderr: ' + strError)
+
+    if(proc.returncode != 0):
+        return verify_smime(smime_content, True)
 
     signer_cert = ''
-    with open(tmpFilePathSigner, 'r') as f:
-        signer_cert = f.read()
-    return output[0].decode(), signer_cert
+    if(os.path.isfile(tmpFilePathSigner)):
+        with open(tmpFilePathSigner, 'r') as f:
+            signer_cert = f.read()
+    return output[0].decode(), signer_cert, not noverify
 
 def parse_multipart_body(body):
-    lines = body.replace("\r\n", "\n").strip().split("\n")
-    if(not lines[0].lower().startswith('content-type: multipart')):
-        return body, 'TEXT'
-
     # get the multipart boundary
+    lines = body.replace("\r\n", "\n").strip().split("\n")
+    found_multipart = False
     boundary = None
     line = 0
     while True:
+        if(not lines[line].startswith(' ') and not lines[line].startswith('\t')):
+            found_multipart = False
         for item in lines[line].split(';'):
-            if(item.strip().lower().startswith('boundary=')):
+            if(item.strip().lower().startswith('content-type: multipart')):
+                found_multipart = True
+            if(found_multipart and item.strip().lower().startswith('boundary=')):
                 boundary = item.strip()[9:].strip('"')
                 line = None
         # content-type header with boundary may be broken into multiple lines
-        if(line != None and (lines[line+1].startswith(' ') or lines[line+1].startswith('\t'))):
-            line += 1
-        else: break
+        if(line == None): break
+        line += 1
+
+    # fallback - return unparsed body if message was not detected as multipart
+    if(not found_multipart or boundary == None):
+        return body, 'TEXT'
 
     # iterate over multiparts and return HTML if avail, TEXT as fallback
     text_plain = ''
@@ -101,7 +113,12 @@ def parse_multipart_body(body):
             elif(header_parts[0].lower() == 'content-transfer-encoding'):
                 if(header_parts[1].split(';')[0].strip().lower() == 'quoted-printable'):
                     part_body = quopri.decodestring(part_parts[1]).decode('utf-8')
-        if(part_body_type == 'text/html'):
+                elif(header_parts[1].split(';')[0].strip().lower() == 'base64'):
+                    part_body = base64.b64decode(part_parts[1]).decode('utf-8')
+        if(part_body_type.startswith('multipart')):
+            # parse nested multipart - we love recursion
+            return parse_multipart_body(part)
+        elif(part_body_type == 'text/html'):
             return part_body, 'HTML'
         elif(part_body.strip() != ''):
             text_plain = part_body
@@ -154,15 +171,16 @@ def handle_partial_data(type, message):
             if(len(msg['Smime'].split(',')) > 1):
                 payload = msg['Smime'].split(',')
                 smime_content_type = payload[0]
-                smime_content = payload[1]#.replace("\r\n", "\n").replace("\n", "").strip()
+                smime_content = payload[1].replace("\r\n", "\n").strip()
 
             # decrypt and verify
-            if(smime_content_type.startswith('data:application/pkcs7-mime')):
+            if(smime_content_type.startswith('data:application/pkcs7-mime')
+            or smime_content_type.startswith('data:application/x-pkcs7-mime')):
                 decrypted = decrypt_smime(smime_content)
-                verified, signer_cert = verify_smime(decrypted)
+                verified, signer_cert, signature_valid = verify_smime(decrypted)
             # verify only
             elif(smime_content_type.startswith('data:multipart/signed')):
-                verified, signer_cert = verify_smime(base64.b64decode(smime_content))
+                verified, signer_cert, signature_valid = verify_smime(base64.b64decode(smime_content))
             else:
                 raise Exception('Unknown content type: '+smime_content_type)
 
@@ -170,12 +188,24 @@ def handle_partial_data(type, message):
             body, body_type = parse_multipart_body(verified)
 
             # get signer cert
-            cert = x509.load_pem_x509_certificate(signer_cert.encode('ascii'), default_backend())
-            signer_cert = (signer_cert.strip()
-                .lstrip('-----BEGIN CERTIFICATE-----')
-                .rstrip('-----END CERTIFICATE-----')
-                .replace("\r\n", "\n").replace("\n", ""))
+            certIssuedBy = ''
+            certIssuedTo = ''
+            certValidFrom = ''
+            certValidTo = ''
+            try:
+                cert = x509.load_pem_x509_certificate(signer_cert.encode('ascii'), default_backend())
+                certIssuedBy = str(cert.issuer.rfc4514_string())
+                certIssuedTo = str(cert.subject.rfc4514_string())
+                certValidFrom = str(cert.not_valid_before)
+                certValidTo = str(cert.not_valid_after)
+                signer_cert = (signer_cert.strip()
+                    .lstrip('-----BEGIN CERTIFICATE-----')
+                    .rstrip('-----END CERTIFICATE-----')
+                    .replace("\r\n", "\n").replace("\n", ""))
+            except Exception as e:
+                log('!!! Unable to parse signer cert: '+str(e))
 
+            # prepare response to OWA
             fetch_partial_data = json.dumps({
                 "Data": {
                     "__type": "Message:#Exchange",
@@ -209,15 +239,15 @@ def handle_partial_data(type, message):
                     "Sender": None,
                     "Sensitivity": None,
                     "SmimeSignature": {
-                        "CertIssuedBy": str(cert.issuer.rfc4514_string()),
-                        "CertIssuedTo": str(cert.subject.rfc4514_string()),
+                        "CertIssuedBy": certIssuedBy,
+                        "CertIssuedTo": certIssuedTo,
                         "CertRawData": signer_cert,
-                        "CertValidFrom": str(cert.not_valid_before),
-                        "CertValidTo": str(cert.not_valid_after),
+                        "CertValidFrom": certValidFrom,
+                        "CertValidTo": certValidTo,
                         "ClientVerificationResult": 0,
-                        "IsCertValidToClient": True,
+                        "IsCertValidToClient": signature_valid,
                         "IsCertValidToServer": False,
-                        "IsHashMatched": True,
+                        "IsHashMatched": signature_valid,
                         "ServerVerificationResult": -1,
                     },
                     "SmimeType": 13,
