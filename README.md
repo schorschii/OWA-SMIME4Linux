@@ -1,5 +1,5 @@
 # OWA-SMIME4Linux
-This is a Linux implementation of the Outlook Web App SMIME control for Linux. Originally, SMIME functionality in OWA is only available for Windows. **Currently, only mail decryption is implemented.**
+This is a Linux implementation of the Outlook Web App SMIME control for Linux. Originally, SMIME functionality in OWA is only available for Windows.
 
 OWA uses [Native Messaging](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/Native_messaging) to communicate with a small piece of software installed on the user's computer to do SMIME mail de-/encryption. The browser hands the SMIME ciphertext to this software which decrypts it using the certificate from the local cert store, and returns it to the website so that the plaintext can be displayed (or vice versa when sending encrypted mails).
 
@@ -20,7 +20,10 @@ OWA-SMIME4Linux internally calls the `openssl` command line utility for de-/encr
    - On-Prem Exchange only: open the "Microsoft S/MIME" extension settings page and enter your domain name to make the extension trust your domain.
 5. Put your cert with private key in PEM format into `~/.config/owa-smime4linux/cert.pem`.  
    You can use `openssl pkcs12 -in cert.p12 -out cert.pem -nodes (-legacy)` to convert a .p12/.pfx file into .pem, but remember to restrict access permissions to this folder!
-5. Open OWA and open a SMIME encrypted mail -> profit.
+
+## Usage
+1. Open OWA and open a SMIME encrypted and/or signed mail -> profit.
+2. Sending a SMIME encrypted and/or signed mail unfortunately needs one more hack. Thanks to Microsoft, the encrypt/signing options only appear if the browser's user agent contains "Windows". You need to open the dev tools (F12), click on the 3 dots -> More Tools -> Network Conditions. There, disable "Use browser default" and select "Chrome - Windows". This is only a temporary workaround. If you have a better solution please let me know!
 
 ## Interesting OpenSSL Commands
 - `openssl smime -in mymail.eml -verify -noverify -signer scert.pem -out textdata`

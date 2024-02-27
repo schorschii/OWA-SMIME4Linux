@@ -1,5 +1,6 @@
 #!/bin/python3
 
+from datetime import datetime
 from pathlib import Path
 import queue
 import quopri
@@ -14,6 +15,7 @@ import sys, os
 
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives.serialization import Encoding
 
 LOGFILE = 'native.log' # use None for no logging
 
@@ -27,18 +29,20 @@ def log(text):
         with open(LOGFILE, 'a') as logfile:
             logfile.write(text+"\n\n")
 
+def get_cert_path():
+    cert_path = str(Path.home())+'/.config/owa-smime4linux/cert.pem'
+    if(not os.path.isfile(cert_path)):
+        raise Exception(cert_path+' does not exist!')
+    return cert_path
+
 def decrypt_smime(smime_content):
     header = ''
     if(not smime_content.lower().startswith('content-type:')):
         header = 'Content-Type: application/x-pkcs7-mime; smime-type=enveloped-data; name="smime.p7m"\n\n'
     smime_message = bytes(header + smime_content, encoding='utf-8')
 
-    cert_path = str(Path.home())+'/.config/owa-smime4linux/cert.pem'
-    if(not os.path.isfile(cert_path)):
-        raise Exception(cert_path+' does not exist!')
-
     proc = subprocess.Popen(
-        ['openssl', 'cms', '-decrypt', '-recip', cert_path],
+        ['openssl', 'cms', '-decrypt', '-recip', get_cert_path()],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE
     )
     output = proc.communicate(input=smime_message)
@@ -63,7 +67,7 @@ def verify_smime(smime_content, noverify=False):
     output = proc.communicate(input=smime_content)
     strError = output[1].decode('utf-8')
     if(strError.strip() != ''):
-        log('!!!x OpenSSL stderr: ' + strError)
+        log('!!! OpenSSL stderr: ' + strError)
 
     if(proc.returncode != 0):
         return verify_smime(smime_content, True)
@@ -74,16 +78,71 @@ def verify_smime(smime_content, noverify=False):
             signer_cert = f.read()
     return output[0].decode(), signer_cert, not noverify
 
+def encrypt_smime(content, recipient_certs):
+    if(not isinstance(content, bytes)):
+        content = bytes(content, encoding='utf-8')
+
+    tmpFilePathRecipients = '/tmp/recipients.pem'
+    if(os.path.isfile(tmpFilePathRecipients)):
+        os.unlink(tmpFilePathRecipients)
+    with open(tmpFilePathRecipients, 'w') as f:
+        for recipient_cert in recipient_certs:
+            f.write(recipient_cert)
+
+    proc = subprocess.Popen(
+        ['openssl', 'smime', '-encrypt', tmpFilePathRecipients],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE
+    )
+    output = proc.communicate(input=content)
+    strError = output[1].decode('utf-8')
+    if(strError.strip() != ''):
+        log('!!! OpenSSL stderr: ' + strError)
+
+    if(proc.returncode != 0):
+        raise Exception('OpenSSL encrypt error')
+
+    return output[0].decode()
+
+def sign_smime(content, signature_cert):
+    if(not isinstance(content, bytes)):
+        content = bytes(content, encoding='utf-8')
+
+    tmpFilePathSigner = '/tmp/signer.pem'
+    if(os.path.isfile(tmpFilePathSigner)):
+        os.unlink(tmpFilePathSigner)
+    with open(tmpFilePathSigner, 'w') as f:
+        f.write(signature_cert)
+
+    proc = subprocess.Popen(
+        ['openssl', 'smime', '-sign', '-signer', tmpFilePathSigner, '-inkey', get_cert_path()],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE
+    )
+    output = proc.communicate(input=content)
+    strError = output[1].decode('utf-8')
+    if(strError.strip() != ''):
+        log('!!! OpenSSL stderr: ' + strError)
+
+    if(proc.returncode != 0):
+        raise Exception('OpenSSL sign error')
+
+    return output[0].decode()
+
 def parse_multipart_body(body):
     # get the multipart boundary
-    lines = body.replace("\r\n", "\n").strip().split("\n")
+    body = body.replace("\r\n", "\n")
+    lines = body.strip().split("\n")
     found_multipart = False
     boundary = None
     line = 0
     while True:
+        if(line >= len(lines)): break
         if(not lines[line].startswith(' ') and not lines[line].startswith('\t')):
             found_multipart = False
         for item in lines[line].split(';'):
+            if(item.strip().lower().startswith('content-type: text/plain')):
+                return body.split("\n\n", 1)[1], 'TEXT'
+            if(item.strip().lower().startswith('content-type: text/html')):
+                return body.split("\n\n", 1)[1], 'HTML'
             if(item.strip().lower().startswith('content-type: multipart')):
                 found_multipart = True
             if(found_multipart and item.strip().lower().startswith('boundary=')):
@@ -100,7 +159,7 @@ def parse_multipart_body(body):
     # iterate over multiparts and return HTML if avail, TEXT as fallback
     text_plain = ''
     for part in body.split(boundary):
-        part_parts = part.replace("\r\n", "\n").strip().split("\n\n", 1)
+        part_parts = part.strip().split("\n\n", 1)
         if(len(part_parts) != 2): continue
         part_headers = part_parts[0]
         part_body = part_parts[1]
@@ -128,18 +187,28 @@ def handle_owa_message(message):
     msg = json.loads(message)
     log('>> ' + str(msg))
 
-    inner_data_response = handle_partial_data(
-        msg['data']['__type'],
-        msg['data']['PartialData'] if 'PartialData' in msg['data'] else '{}'
-    )
-    if(inner_data_response):
-        rsp = {
-            "data": inner_data_response,
-            "messageType": msg['messageType'],
-            "portId": msg['portId'],
-            "requestId": msg['requestId']
-        }
-        send_native_message(json.dumps(rsp))
+    if(msg['messageType'] == 'GetSettings'):
+        send_native_message(json.dumps({
+            "AllowedDomainsByPolicy": []
+        }))
+        return
+
+    if('__type' in msg['data']):
+        inner_data_response = handle_partial_data(
+            msg['data']['__type'],
+            msg['data']['PartialData'] if 'PartialData' in msg['data'] else '{}'
+        )
+        if(inner_data_response):
+            rsp = {
+                "data": inner_data_response,
+                "messageType": msg['messageType'],
+                "portId": msg['portId'],
+                "requestId": msg['requestId']
+            }
+            send_native_message(json.dumps(rsp))
+            return
+
+    log('!!! Oh no, I don\'t know how to handle this request :(')
 
 fetch_partial_data = json.dumps({
     "Data": {
@@ -256,6 +325,74 @@ def handle_partial_data(type, message):
                     "__type": "Message:#Exchange"
                 },
                 "ErrorCode": 0
+            })
+            return {
+                "__type": "AcknowledgePartialSmimeRequestArrived"+SMIME_PROTOCOL_NAMESPACE,
+                "PartIndex": -1,
+                "StartOffset": -1,
+                "NextStartOffset": -1,
+                "Status": 1
+            }
+
+        # request to return signing cert
+        if(msg['__type'] == 'GetSigningCertificateParams'+SMIME_PROTOCOL_NAMESPACE):
+            with open(get_cert_path(), 'rb') as f:
+                cert = x509.load_pem_x509_certificate(f.read(), default_backend())
+                fetch_partial_data = json.dumps({
+                    "Data": base64.b64encode(cert.public_bytes(Encoding.DER)).decode('utf-8'),
+                    "ErrorCode": 0
+                })
+            return {
+                "__type": "AcknowledgePartialSmimeRequestArrived"+SMIME_PROTOCOL_NAMESPACE,
+                "PartIndex": -1,
+                "StartOffset": -1,
+                "NextStartOffset": -1,
+                "Status": 1
+            }
+
+        # request to create a SMIME message
+        if(msg['__type'] == 'CreateSmimeFromMessageParams'+SMIME_PROTOCOL_NAMESPACE):
+            email_message = json.loads(msg['EmailMessage'])
+            recipients = []
+            for recipient in email_message['ToRecipients']:
+                recipients.append('"'+recipient['Name']+'" <'+recipient['EmailAddress']+'>')
+            signing_cert = None
+            if(msg['SigningCertificate']):
+                signing_cert = (
+                    '-----BEGIN CERTIFICATE-----\n'+msg['SigningCertificate']+'\n-----END CERTIFICATE-----\n'
+                )
+            encryption_certs = []
+            if(msg['EncryptionCertificates']):
+                for raw_cert in json.loads(msg['EncryptionCertificates']):
+                    encryption_certs.append(
+                        '-----BEGIN CERTIFICATE-----\n'+raw_cert+'\n-----END CERTIFICATE-----\n'
+                    )
+
+            signed = sign_smime(
+                'Content-Type: text/html'+"\r\n\r\n"+email_message['Body']['Value'],
+                signing_cert
+            )
+            encrypted = encrypt_smime(signed, encryption_certs)
+
+            headers = [
+                'MIME-Version: 1.0',
+                'From: "'+email_message['From']['Mailbox']['Name']+'" <'+email_message['From']['Mailbox']['EmailAddress']+'>',
+                'To: '+', '.join(recipients),
+                'Subject: '+(email_message['Subject'] if 'Subject' in email_message else '?'),
+                'Importance: '+(email_message['Importance'] if 'Importance' in email_message else 'Normal'),
+                'Sensitivity: '+(email_message['Sensitivity'] if 'Sensitivity' in email_message else 'Normal'),
+                'Date: '+datetime.now().strftime('%a, %d %b %Y %H:%M:%S %z'),
+                'X-Generated-By: OWA-SMIME4Linux '+SMIME_CONTROL_VERSION,
+                'Content-Type: application/x-pkcs7-mime; name="smime.p7m"; smime-type="enveloped-data"',
+                'Content-Transfer-Encoding: base64',
+                'Content-Disposition: attachment; filename="smime.p7m"'
+            ]
+            #log("\r\n".join(headers)+"\r\n\r\n"+encrypted.replace("\n", "\r\n").split("\r\n\r\n", 1)[1])
+            fetch_partial_data = json.dumps({
+                "Data": ("\r\n".join(headers)
+                    +"\r\n\r\n"
+                    +encrypted.replace("\n", "\r\n").split("\r\n\r\n", 1)[1]
+                )
             })
             return {
                 "__type": "AcknowledgePartialSmimeRequestArrived"+SMIME_PROTOCOL_NAMESPACE,
