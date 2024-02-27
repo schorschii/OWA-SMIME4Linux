@@ -29,11 +29,22 @@ def log(text):
         with open(LOGFILE, 'a') as logfile:
             logfile.write(text+"\n\n")
 
+config_path = str(Path.home())+'/.config/owa-smime4linux'
 def get_cert_path():
-    cert_path = str(Path.home())+'/.config/owa-smime4linux/cert.pem'
+    Path(config_path).mkdir(parents=True, exist_ok=True)
+    os.chmod(config_path, 0o700)
+    cert_path = config_path+'/cert.pem'
     if(not os.path.isfile(cert_path)):
         raise Exception(cert_path+' does not exist!')
     return cert_path
+
+cache_path = str(Path.home())+'/.cache/owa-smime4linux'
+def get_temp_path(filename):
+    Path(cache_path).mkdir(parents=True, exist_ok=True)
+    signer_path = cache_path+'/'+filename
+    if(os.path.isfile(signer_path)):
+        os.unlink(signer_path)
+    return signer_path
 
 def decrypt_smime(smime_content):
     header = ''
@@ -56,12 +67,9 @@ def verify_smime(smime_content, noverify=False):
     if(not isinstance(smime_content, bytes)):
         smime_content = bytes(smime_content, encoding='utf-8')
 
-    tmpFilePathSigner = '/tmp/signer.pem'
-    if(os.path.isfile(tmpFilePathSigner)):
-        os.unlink(tmpFilePathSigner)
-
+    tmp_path_signer = get_temp_path('signer.pem')
     proc = subprocess.Popen(
-        ['openssl', 'smime', '-verify', '-signer', tmpFilePathSigner, '-noverify' if noverify else ''],
+        ['openssl', 'smime', '-verify', '-signer', tmp_path_signer, '-noverify' if noverify else ''],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE
     )
     output = proc.communicate(input=smime_content)
@@ -73,8 +81,8 @@ def verify_smime(smime_content, noverify=False):
         return verify_smime(smime_content, True)
 
     signer_cert = ''
-    if(os.path.isfile(tmpFilePathSigner)):
-        with open(tmpFilePathSigner, 'r') as f:
+    if(os.path.isfile(tmp_path_signer)):
+        with open(tmp_path_signer, 'r') as f:
             signer_cert = f.read()
     return output[0].decode(), signer_cert, not noverify
 
@@ -82,15 +90,13 @@ def encrypt_smime(content, recipient_certs):
     if(not isinstance(content, bytes)):
         content = bytes(content, encoding='utf-8')
 
-    tmpFilePathRecipients = '/tmp/recipients.pem'
-    if(os.path.isfile(tmpFilePathRecipients)):
-        os.unlink(tmpFilePathRecipients)
-    with open(tmpFilePathRecipients, 'w') as f:
+    tmp_path_recipients = get_temp_path('recipients.pem')
+    with open(tmp_path_recipients, 'w') as f:
         for recipient_cert in recipient_certs:
             f.write(recipient_cert)
 
     proc = subprocess.Popen(
-        ['openssl', 'smime', '-encrypt', tmpFilePathRecipients],
+        ['openssl', 'smime', '-encrypt', tmp_path_recipients],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE
     )
     output = proc.communicate(input=content)
@@ -99,7 +105,7 @@ def encrypt_smime(content, recipient_certs):
         log('!!! OpenSSL stderr: ' + strError)
 
     if(proc.returncode != 0):
-        raise Exception('OpenSSL encrypt error')
+        raise Exception('OpenSSL encrypt error, return code '+str(proc.returncode))
 
     return output[0].decode()
 
@@ -107,14 +113,12 @@ def sign_smime(content, signature_cert):
     if(not isinstance(content, bytes)):
         content = bytes(content, encoding='utf-8')
 
-    tmpFilePathSigner = '/tmp/signer.pem'
-    if(os.path.isfile(tmpFilePathSigner)):
-        os.unlink(tmpFilePathSigner)
-    with open(tmpFilePathSigner, 'w') as f:
+    tmp_path_signer = get_temp_path('signer.pem')
+    with open(tmp_path_signer, 'w') as f:
         f.write(signature_cert)
 
     proc = subprocess.Popen(
-        ['openssl', 'smime', '-sign', '-signer', tmpFilePathSigner, '-inkey', get_cert_path()],
+        ['openssl', 'smime', '-sign', '-signer', tmp_path_signer, '-inkey', get_cert_path()],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE
     )
     output = proc.communicate(input=content)
@@ -123,7 +127,7 @@ def sign_smime(content, signature_cert):
         log('!!! OpenSSL stderr: ' + strError)
 
     if(proc.returncode != 0):
-        raise Exception('OpenSSL sign error')
+        raise Exception('OpenSSL sign error, return code '+str(proc.returncode))
 
     return output[0].decode()
 
