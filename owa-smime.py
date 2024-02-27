@@ -17,17 +17,10 @@ from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.serialization import Encoding
 
-LOGFILE = 'native.log' # use None for no logging
-
 SMIME_PROTOCOL_NAMESPACE = ':#Microsoft.Exchange.Clients.BrowserExtension.Smime'
 SMIME_CONTROL_NAMESPACE  = ':#Microsoft.Exchange.Clients.Smime'
 SMIME_CONTROL_VERSION    = '4.0700.19.19.814.1'
 
-
-def log(text):
-    if(LOGFILE):
-        with open(LOGFILE, 'a') as logfile:
-            logfile.write(text+"\n\n")
 
 config_path = str(Path.home())+'/.config/owa-smime4linux'
 def get_cert_path():
@@ -41,10 +34,19 @@ def get_cert_path():
 cache_path = str(Path.home())+'/.cache/owa-smime4linux'
 def get_temp_path(filename):
     Path(cache_path).mkdir(parents=True, exist_ok=True)
+    os.chmod(cache_path, 0o700)
     signer_path = cache_path+'/'+filename
     if(os.path.isfile(signer_path)):
         os.unlink(signer_path)
     return signer_path
+
+def log(text):
+    Path(cache_path).mkdir(parents=True, exist_ok=True)
+    os.chmod(cache_path, 0o700)
+    log_path = cache_path+'/'+'native.log'
+    if(os.path.isfile(log_path)):
+        with open(log_path, 'a') as log_file:
+            log_file.write(text+"\n\n")
 
 def decrypt_smime(smime_content):
     header = ''
