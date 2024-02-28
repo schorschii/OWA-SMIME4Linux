@@ -133,6 +133,35 @@ def sign_smime(content, signature_cert):
 
     return output[0].decode()
 
+# recycling: a well-known function from the OCO-Agent, reused to save the environment
+def guessEncodingAndDecode(textBytes, codecs=['utf-8', 'cp1252', 'cp850']):
+    for codec in codecs:
+        try:
+            return textBytes.decode(codec)
+        except UnicodeDecodeError: pass
+    return textBytes.decode(sys.stdout.encoding, 'replace') # fallback: replace invalid characters
+
+def parse_body(part):
+    part_parts = part.strip().split("\n\n", 1)
+    if(len(part_parts) != 2):
+        return '', 'TEXT'
+    part_headers = part_parts[0]
+    part_body = part_parts[1]
+    part_body_type = 'text/plain'
+    for header in part_headers.split("\n"):
+        header_parts = header.split(':')
+        if(header_parts[0].lower() == 'content-type'):
+            part_body_type = header_parts[1].split(';')[0].strip().lower()
+        elif(header_parts[0].lower() == 'content-transfer-encoding'):
+            if(header_parts[1].split(';')[0].strip().lower() == 'quoted-printable'):
+                part_body = guessEncodingAndDecode(quopri.decodestring(part_parts[1]))
+            elif(header_parts[1].split(';')[0].strip().lower() == 'base64'):
+                part_body = guessEncodingAndDecode(base64.b64decode(part_parts[1]))
+    if(part_body_type == 'text/html'):
+        return part_body, 'HTML'
+    elif(part_body.strip() != ''):
+        return part_body, 'TEXT'
+
 def parse_multipart_body(body):
     # get the multipart boundary
     body = body.replace("\r\n", "\n")
@@ -146,9 +175,9 @@ def parse_multipart_body(body):
             found_multipart = False
         for item in lines[line].split(';'):
             if(item.strip().lower().startswith('content-type: text/plain')):
-                return body.split("\n\n", 1)[1], 'TEXT'
+                return parse_body(body)
             if(item.strip().lower().startswith('content-type: text/html')):
-                return body.split("\n\n", 1)[1], 'HTML'
+                return parse_body(body)
             if(item.strip().lower().startswith('content-type: multipart')):
                 found_multipart = True
             if(found_multipart and item.strip().lower().startswith('boundary=')):
@@ -162,31 +191,30 @@ def parse_multipart_body(body):
     if(not found_multipart or boundary == None):
         return body, 'TEXT'
 
-    # iterate over multiparts and return HTML if avail, TEXT as fallback
+    # iterate over multiparts
     text_plain = ''
     for part in body.split(boundary):
         part_parts = part.strip().split("\n\n", 1)
         if(len(part_parts) != 2): continue
         part_headers = part_parts[0]
-        part_body = part_parts[1]
         part_body_type = 'text/plain'
-        part_body_encoding = None
         for header in part_headers.split("\n"):
             header_parts = header.split(':')
             if(header_parts[0].lower() == 'content-type'):
                 part_body_type = header_parts[1].split(';')[0].strip().lower()
-            elif(header_parts[0].lower() == 'content-transfer-encoding'):
-                if(header_parts[1].split(';')[0].strip().lower() == 'quoted-printable'):
-                    part_body = quopri.decodestring(part_parts[1]).decode('utf-8')
-                elif(header_parts[1].split(';')[0].strip().lower() == 'base64'):
-                    part_body = base64.b64decode(part_parts[1]).decode('utf-8')
         if(part_body_type.startswith('multipart')):
             # parse nested multipart - we love recursion
             return parse_multipart_body(part)
-        elif(part_body_type == 'text/html'):
-            return part_body, 'HTML'
-        elif(part_body.strip() != ''):
-            text_plain = part_body
+        else:
+            # decode the part body
+            payload, payload_type = parse_body(part)
+            if(payload_type == 'HTML'):
+                # return HTML if avail
+                return payload, payload_type
+            else:
+                # save TEXT for fallback return
+                text_plain = payload
+    # return TEXT if no HTML part was found
     return text_plain, 'TEXT'
 
 def handle_owa_message(message):
