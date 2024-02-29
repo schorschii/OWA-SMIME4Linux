@@ -210,22 +210,26 @@ def parse_multipart_body(body):
     inner_multiparts = inner_multipart.split('--'+boundary)
     inner_multiparts.pop(0) # avoid endless loop - do not parse ourself again
     for part in inner_multiparts:
-        part_type = 'text/plain'
-        filename = None
+        part_type  = 'text/plain'
+        content_id = ''
+        filename   = None
         for header, fields in parse_headers(part).items():
-            if(header.lower() == 'content-disposition' and fields[0].lower() == 'attachment'):
+            if(header.lower() == 'content-disposition'
+            and (fields[0].lower() == 'attachment' or fields[0].lower() == 'inline')):
                 for field in fields:
                     if(field.lower().startswith('filename=')):
                         filename = field[9:].strip('"')
             if(header.lower() == 'content-type'):
                 part_type = fields[0].lower()
+            if(header.lower() == 'content-id'):
+                content_id = fields[0].lstrip('<').rstrip('>')
         if(part_type.startswith('multipart')):
             # parse nested multipart - we love recursion
             body_return_candidate = parse_multipart_body(part)
         elif(filename):
             # decode and append attachment
             payload, payload_type = parse_body(part)
-            attachments.append({'name': filename, 'type': part_type, 'content': payload})
+            attachments.append({'name': filename, 'type': part_type, 'content_id': content_id, 'content': payload})
         else:
             # decode the message body
             payload, payload_type = parse_body(part)
@@ -249,7 +253,7 @@ def handle_owa_message(message):
     if(shortlog):
         logmsg = copy.deepcopy(msg)
         if('PartialData' in logmsg['data']):
-            logmsg['data']['PartialData'] = logmsg['data']['PartialData'][:250]
+            logmsg['data']['PartialData'] = logmsg['data']['PartialData'][:750]
         log('>> ' + str(logmsg))
     else:
         log('>> ' + str(msg))
@@ -395,15 +399,20 @@ def handle_partial_data(type, message):
                 attachments.append({
                     "__type":"FileAttachment:#Exchange",
                     "AttachmentId": {"Id":generate_id(), "__type":"AttachmentId:#Exchange"},
-                    "ContentId": "",
+                    "ContentId": attachment['content_id'],
                     "ContentLocation": None,
                     "ContentType": attachment['type'],
-                    "IsInline": False,
+                    "IsInline": True if attachment['content_id'] else False,
                     "IsSmimeDecoded": True,
                     "Name": attachment['name'],
                     "Size": len(attachment['content']),
                     "Content": base64.b64encode(attachment['content']).decode('utf-8')
                 })
+                if(attachment['content_id']):
+                    body = body.replace(
+                        'cid:'+attachment['content_id'],
+                        'data:'+attachment['type']+';base64,'+base64.b64encode(attachment['content']).decode('utf-8')
+                    )
             fetch_partial_data = json.dumps({
                 "Data": {
                     "__type": "Message:#Exchange",
@@ -513,7 +522,7 @@ def handle_partial_data(type, message):
 def send_native_message(msg):
     shortlog = True
     if(shortlog):
-        logmsg = copy.deepcopy(msg)[:250]
+        logmsg = copy.deepcopy(msg)[:750]
         log('<< ' + str(logmsg))
     else:
         log('<< ' + str(msg))
