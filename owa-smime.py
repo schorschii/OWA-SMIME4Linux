@@ -34,6 +34,7 @@ def get_cert_path():
         raise Exception(cert_path+' does not exist!')
     return cert_path
 
+cache_files = []
 cache_path = str(Path.home())+'/.cache/owa-smime4linux'
 def get_temp_path(filename):
     Path(cache_path).mkdir(parents=True, exist_ok=True)
@@ -41,6 +42,8 @@ def get_temp_path(filename):
     signer_path = cache_path+'/'+filename
     if(os.path.isfile(signer_path)):
         os.unlink(signer_path)
+    if(not signer_path in cache_files):
+        cache_files.append(signer_path)
     return signer_path
 
 def log(text):
@@ -539,6 +542,9 @@ def recv_native_message(queue):
             handle_owa_message(text)
 
 def exit_log():
+    for file_path in cache_files:
+        if(os.path.isfile(file_path)):
+            os.unlink(file_path)
     log('[EXIT]')
 atexit.register(exit_log)
 
