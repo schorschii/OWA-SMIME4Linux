@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from pathlib import Path
+import copy
 import queue
 import quopri
 import subprocess
@@ -20,6 +21,8 @@ from cryptography.hazmat.primitives.serialization import Encoding
 SMIME_PROTOCOL_NAMESPACE = ':#Microsoft.Exchange.Clients.BrowserExtension.Smime'
 SMIME_CONTROL_NAMESPACE  = ':#Microsoft.Exchange.Clients.Smime'
 SMIME_CONTROL_VERSION    = '4.0700.19.19.814.1'
+
+MAX_DOWNLOAD_MESSAGE_SIZE = 100000
 
 
 config_path = str(Path.home())+'/.config/owa-smime4linux'
@@ -135,6 +138,8 @@ def sign_smime(content, signature_cert):
 
 # recycling: a well-known function from the OCO-Agent, reused to save the environment
 def guessEncodingAndDecode(textBytes, codecs=['utf-8', 'cp1252', 'cp850']):
+    if(isinstance(textBytes, str)):
+        return textBytes
     for codec in codecs:
         try:
             return textBytes.decode(codec)
@@ -143,83 +148,108 @@ def guessEncodingAndDecode(textBytes, codecs=['utf-8', 'cp1252', 'cp850']):
 
 def parse_body(part):
     part_parts = part.strip().split("\n\n", 1)
-    if(len(part_parts) != 2):
-        return '', 'TEXT'
+    if(len(part_parts) == 1): return '', 'FAIL'
     part_headers = part_parts[0]
     part_body = part_parts[1]
-    part_body_type = 'text/plain'
-    for header in part_headers.split("\n"):
-        header_parts = header.split(':')
-        if(header_parts[0].lower() == 'content-type'):
-            part_body_type = header_parts[1].split(';')[0].strip().lower()
-        elif(header_parts[0].lower() == 'content-transfer-encoding'):
-            if(header_parts[1].split(';')[0].strip().lower() == 'quoted-printable'):
-                part_body = guessEncodingAndDecode(quopri.decodestring(part_parts[1]))
-            elif(header_parts[1].split(';')[0].strip().lower() == 'base64'):
-                part_body = guessEncodingAndDecode(base64.b64decode(part_parts[1]))
-    if(part_body_type == 'text/html'):
-        return part_body, 'HTML'
-    elif(part_body.strip() != ''):
-        return part_body, 'TEXT'
+    part_type = ''
+    for header, fields in parse_headers(part_headers).items():
+        if(header.lower() == 'content-type'):
+            part_type = fields[0].lower()
+        elif(header.lower() == 'content-transfer-encoding'):
+            if(fields[0].lower() == 'quoted-printable'):
+                part_body = quopri.decodestring(part_parts[1])
+            elif(fields[0].lower() == 'base64'):
+                part_body = base64.b64decode(part_parts[1])
+    if(part_type == 'text/html' and part_body.strip() != ''):
+        return guessEncodingAndDecode(part_body), 'HTML'
+    elif(part_type.startswith('text/') and part_body.strip() != ''):
+        return guessEncodingAndDecode(part_body), 'TEXT'
+    else:
+        return part_body, 'BIN'
+
+def parse_headers(part):
+    header_block = part.strip().split("\n\n", 1)[0]
+    # condense headers with line breaks back into one line
+    header_block = header_block.replace("\n ", "").replace("\n\t", "")
+    # parse headers into a dict
+    headers = {}
+    for line in header_block.split("\n"):
+        header_parts = line.split(':', 1)
+        if(len(header_parts) == 1): continue
+        headers[header_parts[0].strip()] = [s.strip() for s in header_parts[1].split(';')]
+    return headers
 
 def parse_multipart_body(body):
-    # get the multipart boundary
+    body_return_candidate = (body, 'TEXT')
+    attachments = []
+
+    # normalize line endings
     body = body.replace("\r\n", "\n")
-    lines = body.strip().split("\n")
-    found_multipart = False
+
+    # get the multipart boundary for further parsing
+    # or return body directly if it isn't a multipart message
     boundary = None
-    line = 0
-    while True:
-        if(line >= len(lines)): break
-        if(not lines[line].startswith(' ') and not lines[line].startswith('\t')):
-            found_multipart = False
-        for item in lines[line].split(';'):
-            if(item.strip().lower().startswith('content-type: text/plain')):
-                return parse_body(body)
-            if(item.strip().lower().startswith('content-type: text/html')):
-                return parse_body(body)
-            if(item.strip().lower().startswith('content-type: multipart')):
-                found_multipart = True
-            if(found_multipart and item.strip().lower().startswith('boundary=')):
-                boundary = item.strip()[9:].strip('"')
-                line = None
-        # content-type header with boundary may be broken into multiple lines
-        if(line == None): break
-        line += 1
+    for header, fields in parse_headers(body).items():
+        if(header.lower() == 'content-type'):
+            if(fields[0].lower() == 'text/plain' or fields[0].lower() == 'text/html'):
+                body_return_candidate = parse_body(body)
+            elif(fields[0].lower().startswith('multipart')):
+                for field in fields:
+                    if(field.lower().startswith('boundary=')):
+                        boundary = field[9:].strip('"')
 
-    # fallback - return unparsed body if message was not detected as multipart
-    if(not found_multipart or boundary == None):
-        return body, 'TEXT'
+    # fallback - not a multipart message
+    if(boundary == None):
+        return body_return_candidate[0], body_return_candidate[1], attachments
 
-    # iterate over multiparts
-    text_plain = ''
-    for part in body.split(boundary):
-        part_parts = part.strip().split("\n\n", 1)
-        if(len(part_parts) != 2): continue
-        part_headers = part_parts[0]
-        part_body_type = 'text/plain'
-        for header in part_headers.split("\n"):
-            header_parts = header.split(':')
-            if(header_parts[0].lower() == 'content-type'):
-                part_body_type = header_parts[1].split(';')[0].strip().lower()
-        if(part_body_type.startswith('multipart')):
+    # split by boundary and iterate over multiparts
+    inner_multipart = body.split('--'+boundary+'--')[0]
+    inner_multiparts = inner_multipart.split('--'+boundary)
+    inner_multiparts.pop(0) # avoid endless loop - do not parse ourself again
+    for part in inner_multiparts:
+        part_type = 'text/plain'
+        filename = None
+        for header, fields in parse_headers(part).items():
+            if(header.lower() == 'content-disposition' and fields[0].lower() == 'attachment'):
+                for field in fields:
+                    if(field.lower().startswith('filename=')):
+                        filename = field[9:].strip('"')
+            if(header.lower() == 'content-type'):
+                part_type = fields[0].lower()
+        if(part_type.startswith('multipart')):
             # parse nested multipart - we love recursion
-            return parse_multipart_body(part)
-        else:
-            # decode the part body
+            body_return_candidate = parse_multipart_body(part)
+        elif(filename):
+            # decode and append attachment
             payload, payload_type = parse_body(part)
+            attachments.append({'name': filename, 'type': part_type, 'content': payload})
+        else:
+            # decode the message body
+            payload, payload_type = parse_body(part)
+            # return HTML if avail
             if(payload_type == 'HTML'):
-                # return HTML if avail
-                return payload, payload_type
-            else:
-                # save TEXT for fallback return
-                text_plain = payload
-    # return TEXT if no HTML part was found
-    return text_plain, 'TEXT'
+                body_return_candidate = (payload, payload_type)
+            # save TEXT for fallback return if no HTML part was found
+            elif(payload_type == 'TEXT' and body_return_candidate[1] == 'TEXT'):
+                body_return_candidate = (payload, 'TEXT')
 
+    return body_return_candidate[0], body_return_candidate[1], attachments
+
+def generate_id():
+    return 'smime-' + ''.join(random.choices(string.ascii_lowercase + string.digits, k=32))
+
+waiting_snake = {}
 def handle_owa_message(message):
     msg = json.loads(message)
-    log('>> ' + str(msg))
+
+    shortlog = True
+    if(shortlog):
+        logmsg = copy.deepcopy(msg)
+        if('PartialData' in logmsg['data']):
+            logmsg['data']['PartialData'] = logmsg['data']['PartialData'][:250]
+        log('>> ' + str(logmsg))
+    else:
+        log('>> ' + str(msg))
 
     if(msg['messageType'] == 'GetSettings'):
         send_native_message(json.dumps({
@@ -227,46 +257,90 @@ def handle_owa_message(message):
         }))
         return
 
-    if('__type' in msg['data']):
-        inner_data_response = handle_partial_data(
-            msg['data']['__type'],
-            msg['data']['PartialData'] if 'PartialData' in msg['data'] else '{}'
-        )
-        if(inner_data_response):
-            rsp = {
-                "data": inner_data_response,
-                "messageType": msg['messageType'],
-                "portId": msg['portId'],
-                "requestId": msg['requestId']
-            }
-            send_native_message(json.dumps(rsp))
-            return
+    if(msg['requestId'] in waiting_snake
+    and 'PartialData' in waiting_snake[msg['requestId']]['data']
+    and 'PartialData' in msg['data']):
+        # append next packet to partial request
+        waiting_snake[msg['requestId']]['data']['PartialData'] += msg['data']['PartialData']
+        waiting_snake[msg['requestId']]['Recv-PartIndex'] += 1
+    else:
+        # store request in queue, keep PartIndex
+        prev_values = {'Recv-PartIndex': 0, 'Send-PartIndex': 0}
+        if(msg['requestId'] in waiting_snake):
+            prev_values['Recv-PartIndex'] = waiting_snake[msg['requestId']]['Recv-PartIndex']
+            prev_values['Send-PartIndex'] = waiting_snake[msg['requestId']]['Send-PartIndex']
+        waiting_snake[msg['requestId']] = msg
+        waiting_snake[msg['requestId']]['Recv-PartIndex'] = prev_values['Recv-PartIndex']
+        waiting_snake[msg['requestId']]['Send-PartIndex'] = prev_values['Send-PartIndex']
 
-    log('!!! Oh no, I don\'t know how to handle this request :(')
+    if(msg['messageType'] == 'UploadPartialRequest'):
+        if(msg['data']['IsLastPart']):
+            # transfer complete - process request before acknowledging last part
+            # this implementation is not really async capable as advertised in the initialization message, but cui bono? :))
+            inner_data_response = handle_partial_data(
+                waiting_snake[msg['requestId']]['data']['__type'],
+                waiting_snake[msg['requestId']]['data']['PartialData'] if 'PartialData' in waiting_snake[msg['requestId']]['data'] else '{}'
+            )
+        # acknowledge incoming data
+        rsp = {
+            "data": {
+                "__type": "AcknowledgePartialSmimeRequestArrived"+SMIME_PROTOCOL_NAMESPACE,
+                "PartIndex":       -1 if msg['data']['IsLastPart'] else waiting_snake[msg['requestId']]['Recv-PartIndex'],
+                "StartOffset":     -1 if msg['data']['IsLastPart'] else msg['data']['StartOffset'],
+                "NextStartOffset": -1 if msg['data']['IsLastPart'] else (msg['data']['StartOffset']+len(msg['data']['PartialData'])),
+                "Status":           1 if msg['data']['IsLastPart'] else 0
+            },
+            "messageType": waiting_snake[msg['requestId']]['messageType'],
+            "portId":      waiting_snake[msg['requestId']]['portId'],
+            "requestId":   waiting_snake[msg['requestId']]['requestId']
+        }
+        send_native_message(json.dumps(rsp))
 
-fetch_partial_data = json.dumps({
-    "Data": {
-        "__type": "SmimeControlCapabilities"+SMIME_CONTROL_NAMESPACE,
-        "SupportsAsyncMethods": True,
-        "Version": SMIME_CONTROL_VERSION
-    },
-    "ErrorCode": 0
-})
+    elif(msg['messageType'] == 'DownloadPartialResult'):
+        # send processing result
+        start_offset = waiting_snake[msg['requestId']]['Send-PartIndex'] * MAX_DOWNLOAD_MESSAGE_SIZE
+        end_offset   = (waiting_snake[msg['requestId']]['Send-PartIndex']+1) * MAX_DOWNLOAD_MESSAGE_SIZE
+        is_last_part = end_offset >= len(fetch_partial_data)
+        rsp = {
+            "data": {
+                "__type": "ReturnPartialSmimeResult"+SMIME_PROTOCOL_NAMESPACE,
+                "PartIndex":   waiting_snake[msg['requestId']]['Send-PartIndex'],
+                "StartOffset": start_offset,
+                "EndOffset":   end_offset,
+                "IsLastPart":  is_last_part,
+                "PartialData": fetch_partial_data[start_offset:end_offset],
+                "TotalSize":   len(fetch_partial_data)
+            },
+            "messageType": waiting_snake[msg['requestId']]['messageType'],
+            "portId":      waiting_snake[msg['requestId']]['portId'],
+            "requestId":   waiting_snake[msg['requestId']]['requestId']
+        }
+        waiting_snake[msg['requestId']]['Send-PartIndex'] += 1
+        send_native_message(json.dumps(rsp))
+
+    else:
+        log('!!! Oh no, I don\'t know how to handle this request :(')
+
+fetch_partial_data = ''
 def handle_partial_data(type, message):
     global fetch_partial_data
     msg = json.loads(message)
     #log('>>> ' + str(msg))
 
+    if(not '__type' in msg):
+        return
+
     if(type == 'PostPartialSmimeRequest'+SMIME_PROTOCOL_NAMESPACE):
-        # OWA hello message
+        # OWA hello message, respond with our version
         if(msg['__type'] == 'InitializeParams'+SMIME_PROTOCOL_NAMESPACE):
-            return {
-                "__type": "AcknowledgePartialSmimeRequestArrived"+SMIME_PROTOCOL_NAMESPACE,
-                "PartIndex": -1,
-                "StartOffset": -1,
-                "NextStartOffset": -1,
-                "Status": 1
-            }
+            fetch_partial_data = json.dumps({
+                "Data": {
+                    "__type": "SmimeControlCapabilities"+SMIME_CONTROL_NAMESPACE,
+                    "SupportsAsyncMethods": True,
+                    "Version": SMIME_CONTROL_VERSION
+                },
+                "ErrorCode": 0
+            })
 
         # request to parse a SMIME message
         if(msg['__type'] == 'CreateMessageFromSmimeParams'+SMIME_PROTOCOL_NAMESPACE):
@@ -287,8 +361,12 @@ def handle_partial_data(type, message):
             else:
                 raise Exception('Unknown content type: '+smime_content_type)
 
+            # log plaintext message for debugging
+            #with open(get_temp_path('message.txt'), 'w') as f:
+            #    f.write(verified)
+
             # get message body
-            body, body_type = parse_multipart_body(verified)
+            body, body_type, body_attachments = parse_multipart_body(verified)
 
             # get signer cert
             certIssuedBy = ''
@@ -309,10 +387,25 @@ def handle_partial_data(type, message):
                 log('!!! Unable to parse signer cert: '+str(e))
 
             # prepare response to OWA
+            attachments = []
+            for attachment in body_attachments:
+                attachments.append({
+                    "__type":"FileAttachment:#Exchange",
+                    "AttachmentId": {"Id":generate_id(), "__type":"AttachmentId:#Exchange"},
+                    "ContentId": "",
+                    "ContentLocation": None,
+                    "ContentType": attachment['type'],
+                    "IsInline": False,
+                    "IsSmimeDecoded": True,
+                    "Name": attachment['name'],
+                    "Size": len(attachment['content']),
+                    "Content": base64.b64encode(attachment['content']).decode('utf-8')
+                })
             fetch_partial_data = json.dumps({
                 "Data": {
                     "__type": "Message:#Exchange",
-                    "Attachments": None,
+                    "HasAttachments": len(attachments)>0,
+                    "Attachments": attachments if len(attachments)>0 else None,
                     "Body": None,
                     "CcRecipients": None,
                     "Classification": None,
@@ -321,7 +414,6 @@ def handle_partial_data(type, message):
                     "ClassificationKeep": False,
                     "DateTimeSent": None,
                     "From": None,
-                    "HasAttachments": False,
                     "Importance": None,
                     "InReplyTo": None,
                     "IsClassified": False,
@@ -329,7 +421,7 @@ def handle_partial_data(type, message):
                     "IsReadReceiptRequested": False,
                     "ItemClass": "IPM.Note.SMIME",
                     "ItemId": {
-                        "Id": "smime-" + ''.join(random.choices(string.ascii_lowercase + string.digits, k=32)),
+                        "Id": generate_id(),
                         "__type": "ItemId:#Exchange"
                     },
                     "NormalizedBody": {
@@ -353,20 +445,13 @@ def handle_partial_data(type, message):
                         "IsHashMatched": signature_valid,
                         "ServerVerificationResult": -1,
                     },
-                    "SmimeType": 13,
+                    "SmimeType": 13, # who knows
                     "Subject": None,
                     "ToRecipients": None,
                     "__type": "Message:#Exchange"
                 },
                 "ErrorCode": 0
             })
-            return {
-                "__type": "AcknowledgePartialSmimeRequestArrived"+SMIME_PROTOCOL_NAMESPACE,
-                "PartIndex": -1,
-                "StartOffset": -1,
-                "NextStartOffset": -1,
-                "Status": 1
-            }
 
         # request to return signing cert
         if(msg['__type'] == 'GetSigningCertificateParams'+SMIME_PROTOCOL_NAMESPACE):
@@ -376,13 +461,6 @@ def handle_partial_data(type, message):
                     "Data": base64.b64encode(cert.public_bytes(Encoding.DER)).decode('utf-8'),
                     "ErrorCode": 0
                 })
-            return {
-                "__type": "AcknowledgePartialSmimeRequestArrived"+SMIME_PROTOCOL_NAMESPACE,
-                "PartIndex": -1,
-                "StartOffset": -1,
-                "NextStartOffset": -1,
-                "Status": 1
-            }
 
         # request to create a SMIME message
         if(msg['__type'] == 'CreateSmimeFromMessageParams'+SMIME_PROTOCOL_NAMESPACE):
@@ -428,28 +506,15 @@ def handle_partial_data(type, message):
                     +encrypted.replace("\n", "\r\n").split("\r\n\r\n", 1)[1]
                 )
             })
-            return {
-                "__type": "AcknowledgePartialSmimeRequestArrived"+SMIME_PROTOCOL_NAMESPACE,
-                "PartIndex": -1,
-                "StartOffset": -1,
-                "NextStartOffset": -1,
-                "Status": 1
-            }
-
-    # request to return decrypted SMIME message
-    if(type == 'FetchPartialSmimeResult'+SMIME_PROTOCOL_NAMESPACE):
-        return {
-            "__type": "ReturnPartialSmimeResult"+SMIME_PROTOCOL_NAMESPACE,
-            "PartIndex": 0,
-            "StartOffset": 0,
-            "EndOffset": len(fetch_partial_data),
-            "IsLastPart": True,
-            "PartialData": fetch_partial_data,
-            "TotalSize": len(fetch_partial_data)
-        }
 
 def send_native_message(msg):
-    log('<< ' + str(msg))
+    shortlog = True
+    if(shortlog):
+        logmsg = copy.deepcopy(msg)[:250]
+        log('<< ' + str(logmsg))
+    else:
+        log('<< ' + str(msg))
+
     sys.stdout.buffer.write(struct.pack('I', len(msg)))
     if(isinstance(msg, str)):
         sys.stdout.buffer.write(msg.encode('utf-8'))
