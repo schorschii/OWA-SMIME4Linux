@@ -18,8 +18,11 @@ OWA-SMIME4Linux internally calls the `openssl` command line utility for de-/encr
    - The extension is currently not available in the normal Chrome web store. As suggested on the [Microsoft documentation](https://learn.microsoft.com/en-us/exchange/policy-and-compliance/smime/smime-settings-for-owa?view=exchserver-2019), you should use the Chrome policy "ExtensionInstallForcelist" to deploy it.
    - For testing purposes, you can also open the link `https://outlook.office.com/owa/SmimeCrxUpdate.ashx` from the MS docs, then follow the "codebase" URL to `https://res-1.cdn.office.net/owasmime/<VERSION>/Microsoft.Outlook.Smime.crx`, download and drag&drop the .crx archive into the Chrome extension page (dev mode must be enabled).
    - On-Prem Exchange only: open the "Microsoft S/MIME" extension settings page and enter your domain name to make the extension trust your domain.
-5. Put your cert with private key in PEM format into `~/.config/owa-smime4linux/cert.pem`.  
-   You can use `openssl pkcs12 -in cert.p12 -out cert.pem -nodes (-legacy)` to convert a .p12/.pfx file into .pem, but remember to restrict access permissions to this folder!
+5. Put your cert with private key in PEM format into `~/.config/owa-smime4linux/cert.pem` and the cert chain into `~/.config/owa-smime4linux/chain.pem`. The chain will be included in signatures.  
+   You can use the following commands to convert a .p12/.pfx file into .pem.  
+   Remember to restrict access permissions to this folder.  
+   - `openssl pkcs12 -in cert.p12 -out cert.pem -nodes -legacy`
+   - `openssl pkcs12 -in cert.p12 -out chain.pem -nodes -cacerts -nokeys -chain -legacy`
 
 ## Usage
 First, if you are still logged in, log out and log in again. OWA checks the SMIME control availability when logging in.

@@ -26,12 +26,15 @@ MAX_DOWNLOAD_MESSAGE_SIZE = 100000
 
 
 config_path = str(Path.home())+'/.config/owa-smime4linux'
-def get_cert_path():
+def get_config_path(filename, okIfNotPresent=False):
     Path(config_path).mkdir(parents=True, exist_ok=True)
     os.chmod(config_path, 0o700)
-    cert_path = config_path+'/cert.pem'
+    cert_path = config_path+'/'+filename
     if(not os.path.isfile(cert_path)):
-        raise Exception(cert_path+' does not exist!')
+        if(okIfNotPresent):
+            return None
+        else:
+            raise Exception(cert_path+' does not exist!')
     return cert_path
 
 cache_files = []
@@ -66,7 +69,7 @@ def decrypt_smime(smime_content):
     smime_message = bytes(header + smime_content, encoding='utf-8')
 
     proc = subprocess.Popen(
-        ['openssl', 'cms', '-decrypt', '-recip', get_cert_path()],
+        ['openssl', 'cms', '-decrypt', '-recip', get_config_path('cert.pem')],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE
     )
     output = proc.communicate(input=smime_message)
@@ -140,8 +143,15 @@ def sign_smime(content, signature_cert):
     with open(tmp_path_signer, 'w') as f:
         f.write(signature_cert)
 
+    extra_params = []
+
+    chain_file = get_config_path('chain.pem', okIfNotPresent=True)
+    if(chain_file):
+        extra_params.append('-certfile')
+        extra_params.append(chain_file)
+
     proc = subprocess.Popen(
-        ['openssl', 'smime', '-sign', '-nodetach', '-signer', tmp_path_signer, '-inkey', get_cert_path()],
+        ['openssl', 'smime', '-sign', '-nodetach', '-signer', tmp_path_signer, '-inkey', get_config_path('cert.pem')] + extra_params,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE
     )
     output = proc.communicate(input=content)
@@ -502,7 +512,7 @@ def handle_partial_data(type, message):
 
         # request to return signing cert
         if(msg['__type'] == 'GetSigningCertificateParams'+SMIME_PROTOCOL_NAMESPACE):
-            with open(get_cert_path(), 'rb') as f:
+            with open(get_config_path('cert.pem'), 'rb') as f:
                 cert = x509.load_pem_x509_certificate(f.read(), default_backend())
                 fetch_partial_data = json.dumps({
                     "Data": base64.b64encode(cert.public_bytes(Encoding.DER)).decode('utf-8'),
