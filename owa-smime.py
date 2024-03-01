@@ -54,6 +54,11 @@ def log(text):
         with open(log_path, 'a') as log_file:
             log_file.write(text+"\n\n")
 
+class DecryptionException(Exception):
+    pass
+class VerificationException(Exception):
+    pass
+
 def decrypt_smime(smime_content):
     header = ''
     if(not smime_content.lower().startswith('content-type:')):
@@ -69,11 +74,17 @@ def decrypt_smime(smime_content):
     if(strError.strip() != ''):
         log('!!! OpenSSL stderr: ' + strError)
 
+    if(proc.returncode != 0):
+        raise DecryptionException('Unable to decrypt smime')
+
     return output[0].decode()
 
-def verify_smime(smime_content, noverify=False):
+def verify_smime(smime_content, noverify=False, opaque=False, recursion=False):
     if(not isinstance(smime_content, bytes)):
         smime_content = bytes(smime_content, encoding='utf-8')
+
+    if(opaque):
+        smime_content = b'Content-Type: application/x-pkcs7-mime; smime-type=enveloped-data; name="smime.p7m"\n\n'+smime_content
 
     tmp_path_signer = get_temp_path('signer.pem')
     proc = subprocess.Popen(
@@ -86,7 +97,11 @@ def verify_smime(smime_content, noverify=False):
         log('!!! OpenSSL stderr: ' + strError)
 
     if(proc.returncode != 0):
-        return verify_smime(smime_content, True)
+        if(not recursion):
+            # try again without verifying the signer cert
+            return verify_smime(smime_content, opaque=opaque, noverify=True, recursion=True)
+        else:
+            raise VerificationException('Unable to verify smime')
 
     signer_cert = ''
     if(os.path.isfile(tmp_path_signer)):
@@ -126,7 +141,7 @@ def sign_smime(content, signature_cert):
         f.write(signature_cert)
 
     proc = subprocess.Popen(
-        ['openssl', 'smime', '-sign', '-signer', tmp_path_signer, '-inkey', get_cert_path()],
+        ['openssl', 'smime', '-sign', '-nodetach', '-signer', tmp_path_signer, '-inkey', get_cert_path()],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE
     )
     output = proc.communicate(input=content)
@@ -245,6 +260,12 @@ def parse_multipart_body(body):
 def generate_id():
     return 'smime-' + ''.join(random.choices(string.ascii_lowercase + string.digits, k=32))
 
+def insert_newlines(string, every=64):
+    lines = []
+    for i in range(0, len(string), every):
+        lines.append(string[i:i+every])
+    return '\r\n'.join(lines)
+
 waiting_snake = {}
 def handle_owa_message(message):
     msg = json.loads(message)
@@ -360,16 +381,30 @@ def handle_partial_data(type, message):
             # decrypt and verify
             if(smime_content_type.startswith('data:application/pkcs7-mime')
             or smime_content_type.startswith('data:application/x-pkcs7-mime')):
-                decrypted = decrypt_smime(smime_content)
-                verified, signer_cert, signature_valid = verify_smime(decrypted)
+                try:
+                    # decrypt and verify
+                    decrypted = decrypt_smime(smime_content)
+                    verified, signer_cert, signature_valid = verify_smime(decrypted)
+                    smime_type = 13 # who knows
+                except DecryptionException:
+                    # it could also be an opaque signed smime message - try verify only
+                    verified, signer_cert, signature_valid = verify_smime(smime_content, opaque=True)
+                    smime_type = 11
+                except VerificationException:
+                    # decrypt only
+                    verified = decrypted
+                    signer_cert = ''
+                    signature_valid = False
+                    smime_type = 6
             # verify only
             elif(smime_content_type.startswith('data:multipart/signed')):
                 verified, signer_cert, signature_valid = verify_smime(base64.b64decode(smime_content))
+                smime_type = 11
             else:
                 raise Exception('Unknown content type: '+smime_content_type)
 
             # log plaintext message for debugging
-            #with open(get_temp_path('message.txt'), 'w') as f:
+            #with open(get_temp_path('message-in.txt'), 'w') as f:
             #    f.write(verified)
 
             # get message body
@@ -457,7 +492,7 @@ def handle_partial_data(type, message):
                         "IsHashMatched": signature_valid,
                         "ServerVerificationResult": -1,
                     },
-                    "SmimeType": 13, # who knows
+                    "SmimeType": smime_type,
                     "Subject": None,
                     "ToRecipients": None,
                     "__type": "Message:#Exchange"
@@ -492,12 +527,66 @@ def handle_partial_data(type, message):
                         '-----BEGIN CERTIFICATE-----\n'+raw_cert+'\n-----END CERTIFICATE-----\n'
                     )
 
-            signed = sign_smime(
-                'Content-Type: text/html'+"\r\n\r\n"+email_message['Body']['Value'],
-                signing_cert
+            # compile body
+            boundary = generate_id()
+            content_type = 'text/html' if email_message['Body']['BodyType']=='HTML' else 'text/plain'
+            multipart_body = (
+                'MIME-Version: 1.0\n'+
+                'Content-Type: multipart/mixed; boundary="'+boundary+'"\n'+
+                '\n'+
+                '--'+boundary+'\n'+
+                'Content-Type: '+content_type+'\n'+
+                '\n'+
+                email_message['Body']['Value']+'\n'
             )
-            encrypted = encrypt_smime(signed, encryption_certs)
+            if('Attachments' in email_message):
+                for attachment in email_message['Attachments']:
+                    name = attachment['Name'].replace('"', '\\"')
+                    multipart_body += (
+                        '--'+boundary+'\n'+
+                        'Content-Type: '+attachment['ContentType']+';name="'+name+'"\n'+
+                        'Content-Transfer-Encoding: base64\n'+
+                        'Content-Disposition: attachment;filename="'+name+'"\n'+
+                        '\n'+
+                        insert_newlines(attachment['Content'])+'\n'
+                    )
+            multipart_body += '\n--'+boundary+'--\n'
 
+            # log plaintext message for debugging
+            #with open(get_temp_path('message-out.txt'), 'w') as f:
+            #    f.write(multipart_body)
+
+            # sign and encrypt
+            additional_headers = []
+            if(len(encryption_certs) > 0 and signing_cert):
+                signed = sign_smime(multipart_body, signing_cert)
+                smime_body = encrypt_smime(signed, encryption_certs)
+                additional_headers = [
+                    'Content-Type: application/x-pkcs7-mime; name="smime.p7m"; smime-type="enveloped-data"',
+                    'Content-Transfer-Encoding: base64',
+                    'Content-Disposition: attachment; filename="smime.p7m"'
+                ]
+            # encrypt only
+            elif(len(encryption_certs) > 0):
+                smime_body = encrypt_smime(multipart_body, encryption_certs)
+                additional_headers = [
+                    'Content-Type: application/x-pkcs7-mime; name="smime.p7m"; smime-type="enveloped-data"',
+                    'Content-Transfer-Encoding: base64',
+                    'Content-Disposition: attachment; filename="smime.p7m"'
+                ]
+            # sign only
+            elif(signing_cert):
+                smime_body = sign_smime(multipart_body, signing_cert)
+                additional_headers = [
+                    'Content-Type: application/x-pkcs7-mime; name="smime.p7m"; smime-type=signed-data',
+                    'Content-Transfer-Encoding: base64',
+                    'Content-Disposition: attachment; filename="smime.p7m"'
+                ]
+            else:
+                log('No signing cert and no encryption cert given, aborting!')
+                return
+
+            # add headers and hand over to OWA
             headers = [
                 'MIME-Version: 1.0',
                 'From: "'+email_message['From']['Mailbox']['Name']+'" <'+email_message['From']['Mailbox']['EmailAddress']+'>',
@@ -507,16 +596,16 @@ def handle_partial_data(type, message):
                 'Sensitivity: '+(email_message['Sensitivity'] if 'Sensitivity' in email_message else 'Normal'),
                 'Date: '+datetime.now().strftime('%a, %d %b %Y %H:%M:%S %z'),
                 'X-Generated-By: OWA-SMIME4Linux '+SMIME_CONTROL_VERSION,
-                'Content-Type: application/x-pkcs7-mime; name="smime.p7m"; smime-type="enveloped-data"',
-                'Content-Transfer-Encoding: base64',
-                'Content-Disposition: attachment; filename="smime.p7m"'
             ]
-            #log("\r\n".join(headers)+"\r\n\r\n"+encrypted.replace("\n", "\r\n").split("\r\n\r\n", 1)[1])
+            headers += additional_headers
+            message = (
+                "\n".join(headers)
+                +"\n\n"
+                +smime_body.split("\n\n", 1)[1]
+            )
+            #log(message)
             fetch_partial_data = json.dumps({
-                "Data": ("\r\n".join(headers)
-                    +"\r\n\r\n"
-                    +encrypted.replace("\n", "\r\n").split("\r\n\r\n", 1)[1]
-                )
+                "Data": message
             })
 
 def send_native_message(msg):
