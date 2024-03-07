@@ -246,6 +246,9 @@ def parse_multipart_body(body):
                         filename = field[9:].strip('"')
             if(header.lower() == 'content-type'):
                 part_type = fields[0].lower()
+                for field in fields:
+                    if(field.lower().startswith('name=')):
+                        filename = field[5:].strip('"')
             if(header.lower() == 'content-id'):
                 content_id = fields[0].lstrip('<').rstrip('>')
         if(part_type.startswith('multipart')):
