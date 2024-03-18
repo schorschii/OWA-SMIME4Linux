@@ -31,7 +31,19 @@ OWA-SMIME4Linux internally calls the `openssl` command line utility for de-/encr
 First, if you are still logged in, log out and log in again. OWA checks the SMIME control availability when logging in.
 
 1. Open a SMIME encrypted and/or signed mail -> profit.
-2. Sending a SMIME encrypted and/or signed mail unfortunately needs one more hack. Thanks to Microsoft, the encrypt/signing options only appear if the browser's user agent contains "Windows". You need to open the dev tools (F12), click on the 3 dots -> More Tools -> Network Conditions. There, disable "Use browser default" and select "Chrome - Windows". Log out and log in again, now you shoud have the options to enable encryption/signing when writing an email. This is only a temporary workaround. If you have a better solution please let me know!
+2. Sending a SMIME encrypted and/or signed mail unfortunately needs one more hack. Thanks to Microsoft, the encrypt/signing options only appear if the browser's user agent contains "Windows".
+   - For a quick test, you can open the dev tools (F12), click on the 3 dots -> More Tools -> Network Conditions. There, disable "Use browser default" and select "Chrome - Windows". This only works as long as the dev tools are open.
+   - For a durable solution, you can use the [User Agent Switcher and Manager](https://chromewebstore.google.com/detail/user-agent-switcher-and-m/bhchdcejhohfmigjafbampogmaanbfkg) Chrome extension. Install it, open the extension settings, choose "White-List Mode" and enter your OWA URL there (this ensures that the custom user agent will only be used for this URL - we don't want to increase Windows page views in website statistics!). Don't forget to click "Save" on the bottom.  
+     Next, click the User Agent Switcher icon in the Chrome menu bar, choose "Chrome Windows 10" as user agent and click "Apply (active Window)".
+   - Log out and log in again, now you shoud have the options to enable encryption/signing when writing an email.
+
+## Server Setup
+S/MIME in OWA (regardless if used on Windows or Linux) requires a proper setup by your Exchange admin as described in [this Microsoft article](https://techcommunity.microsoft.com/t5/exchange-team-blog/how-to-configure-s-mime-in-office-365/ba-p/584516).
+
+- Set the `SMIMECertificateIssuingCA` option in your Office 365 or on-prem Exchange by uploading an .SST file with the allowed CA certificates. This is basically the chain.pem as described in the installation instructions but in a proprietary SST format. Only an administrator can do this. If this is not set correctly, you will see an error like this:
+  > An error occurred while sending this S/MIME message. The certificate used to sign this message isn’t trusted by your organisation.
+
+- Publish your personal certificate in your companies GAL (Global Address List) ie. Active Directory (only the public part, without private key of course). This can be done by yourself without admin rights. I have a tool for that too for Linux users who can't use Outlook, it's called [CertUploader](https://github.com/schorschii/CertUploader), but it focuses on on-prem AD. Linux-only solutions for Microsoft 365 are highly appreciated.
 
 ## Debugging
 In case of problems, you can create an empty file `~/.cache/owa-smime4linux/native.log` to enable logging of the Native Messaging communication. Attention: this will contain decrypted messages in plaintext. Delete the file afterwards to disable logging!
@@ -40,3 +52,8 @@ In case of problems, you can create an empty file `~/.cache/owa-smime4linux/nati
 - `openssl smime -in mymail.eml -verify -noverify -signer scert.pem -out textdata`
 - `cat message.eml | openssl smime -pk7out | openssl pkcs7 -print_certs`
 - `openssl pkcs7 -in signature.p7 -inform DER -print_certs`
+
+## Support
+If you like this project please consider making a donation using the sponsor button on [GitHub](https://github.com/schorschii/QuickSync4Linux) to support further development. If your financial resources do not allow this, you can at least leave a star for the Github repo.
+
+Furthermore, you can hire me for commercial support or implementing new features. Please [contact me](https://georg-sieber.de/?page=impressum) if you are interested.
