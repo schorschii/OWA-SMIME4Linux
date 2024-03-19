@@ -116,13 +116,15 @@ def encrypt_smime(content, recipient_certs):
     if(not isinstance(content, bytes)):
         content = bytes(content, encoding='utf-8')
 
-    tmp_path_recipients = get_temp_path('recipients.pem')
-    with open(tmp_path_recipients, 'w') as f:
-        for recipient_cert in recipient_certs:
+    recip_cert_files = []
+    for recipient_cert in recipient_certs:
+        tmp_path_recipient = get_temp_path('recipient'+str(len(recip_cert_files))+'.pem')
+        with open(tmp_path_recipient, 'w') as f:
             f.write(recipient_cert)
+            recip_cert_files.append(tmp_path_recipient)
 
     proc = subprocess.Popen(
-        ['openssl', 'smime', '-encrypt', tmp_path_recipients],
+        ['openssl', 'smime', '-encrypt'] + recip_cert_files,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE
     )
     output = proc.communicate(input=content)
@@ -528,6 +530,8 @@ def handle_partial_data(type, message):
             recipients = []
             for recipient in email_message['ToRecipients']:
                 recipients.append('"'+recipient['Name']+'" <'+recipient['EmailAddress']+'>')
+
+            # collect certs
             signing_cert = None
             if(msg['SigningCertificate']):
                 signing_cert = (
