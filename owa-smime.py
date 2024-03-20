@@ -552,7 +552,7 @@ def handle_partial_data(type, message):
                 'Content-Type: multipart/mixed; boundary="'+boundary+'"\n'+
                 '\n'+
                 '--'+boundary+'\n'+
-                'Content-Type: '+content_type+'\n'+
+                'Content-Type: '+content_type+'; charset=utf-8\n'+
                 '\n'+
                 email_message['Body']['Value']+'\n'
             )
