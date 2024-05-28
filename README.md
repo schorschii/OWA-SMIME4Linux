@@ -7,8 +7,6 @@ Native Messaging can only be initiated by a browser extension, that's why beside
 
 OWA-SMIME4Linux internally calls the `openssl` command line utility for de-/encrypting and verifying the email payload.
 
-Thanks to [@oetken](https://github.com/oetken), OWA-SMIME4Linux now also supports smart cards.
-
 ## Installation
 1. Install dependencies: `apt install openssl opensc python3-cryptography python3-easygui`
 2. Copy `owa-smime.py` into `/usr/bin/` and make it executable.
@@ -20,14 +18,28 @@ Thanks to [@oetken](https://github.com/oetken), OWA-SMIME4Linux now also support
    - The extension is currently not available in the normal Chrome web store. As suggested on the [Microsoft documentation](https://learn.microsoft.com/en-us/exchange/policy-and-compliance/smime/smime-settings-for-owa?view=exchserver-2019), you should use the Chrome policy "ExtensionInstallForcelist" to deploy it.
    - For testing purposes, you can also open the link `https://outlook.office.com/owa/SmimeCrxUpdate.ashx` from the MS docs, then follow the "codebase" URL to `https://res-1.cdn.office.net/owasmime/<VERSION>/Microsoft.Outlook.Smime.crx`, download and drag&drop the .crx archive into the Chrome extension page (dev mode must be enabled).
    - On-Prem Exchange only: open the "Microsoft S/MIME" extension settings page and enter your domain name to make the extension trust your domain.
-5. Prepare certificate files. Remember to restrict access permissions to them.
-   - Put your cert with private key in PEM format into `~/.config/owa-smime4linux/cert.pem`.
-     - To extract/convert your personal cert from .p12/.pfx into .pem, use:  
-       `openssl pkcs12 -in cert.p12 -out cert.pem -nodes -legacy`
-   - Put the cert chain (optional) into `~/.config/owa-smime4linux/chain.pem`.  
-     The chain will be included in your signatures. While it is not necessary, the chain helps your recipient verifying your signature if he doesn't have those intermediate certificates.
-     - To extract/convert the cert chain from .p12/.pfx into .pem, use:  
-       `openssl pkcs12 -in cert.p12 -out chain.pem -nodes -cacerts -nokeys -legacy`
+5. You can use a certificate file or a smartcard for the crypto operations. Prepare your key material by following one of the following guides.
+
+### 5a. Certificate File
+- Put your cert with private key in PEM format into `~/.config/owa-smime4linux/cert.pem`.  
+  Remember to restrict the access permissions to this sensitive file.
+  - To extract/convert your personal cert from .p12/.pfx into .pem, use:  
+    `openssl pkcs12 -in cert.p12 -out cert.pem -nodes -legacy`
+
+- (Optional) Put the cert chain into `~/.config/owa-smime4linux/chain.pem`.  
+  The chain will be included in your signatures. While it is not necessary, the chain helps your recipient verifying your signature if he doesn't have those intermediate certificates.
+  - To extract/convert the cert chain from .p12/.pfx into .pem, use:  
+    `openssl pkcs12 -in cert.p12 -out chain.pem -nodes -cacerts -nokeys -legacy`
+
+### 5b. Smartcard
+Thanks to [@oetken](https://github.com/oetken), OWA-SMIME4Linux now also supports smart cards. To use a smartcard, open `~/.config/owa-smime4linux/config.json` and enter your smartcard ID in the `key-id` field. You can list you key IDs using e.g. `pkcs15-tool --list-keys`. The config file may look like this:
+```
+{
+ "key-id": "<YOUR-ID-HERE>",
+ "private-key": null,
+ "cert-chain": null
+}
+```
 
 ## Usage
 First, if you are still logged in, log out and log in again. OWA checks the SMIME control availability when logging in.
