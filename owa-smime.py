@@ -1,5 +1,6 @@
 #!/bin/python3
 
+import easygui
 from datetime import datetime
 from pathlib import Path
 import copy
@@ -13,6 +14,7 @@ import json
 import base64
 import random, string
 import sys, os
+import json
 
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
@@ -24,8 +26,42 @@ SMIME_CONTROL_VERSION    = '4.0700.19.19.814.1'
 
 MAX_DOWNLOAD_MESSAGE_SIZE = 100000
 
+jsonDataTemplate = {}
+jsonDataTemplate["key-id"] = None
+jsonDataTemplate["key-id-description"] = "If using a smart card put your key id here, you can list you key ids using e.g. 'pkcs15-tool --list-keys'"
+jsonDataTemplate["private-key"] = None
+jsonDataTemplate["private-key-description"] = "If using a private key from a file put the location of the pem formated file here."
+jsonDataTemplate["cert-chain"] = None
+jsonDataTemplate["cert-chain-description"] = "(optional) Put the location of your pem formated certificate chain here."
 
 config_path = str(Path.home())+'/.config/owa-smime4linux'
+jsonConfig = {}
+
+def readConfig():
+    global jsonConfig
+    if not os.path.isdir(config_path):
+        Path(config_path).mkdir(parents=True, exist_ok=True)
+        os.chmod(config_path, 0o700)
+    config_file = config_path + '/config.json'
+    if not os.path.isfile(config_file):
+        with open(config_file, 'w') as f:
+            f.write(json.dumps(jsonDataTemplate, indent = True))
+        raise Exception("File " + config_file + " not found. Created template. Please fill the necessary info in here!")
+
+    with open(config_file) as f:
+        jsonData = f.read()
+
+        if(not jsonData):
+            f.close()
+            with open(config_file, 'w') as f:
+                f.write(json.dumps(jsonDataTemplate))
+            raise Exception("File " + config_file + " found, but empty. Created template. Please fill the necessary info in here!")
+
+        jsonConfig = json.loads(jsonData)
+
+    if not jsonConfig["key-id"] and not jsonConfig['private-key']:
+        raise Exception("File " + config_file + " does not have 'key-id' nor 'private-key' entry!")
+
 def get_config_path(filename, okIfNotPresent=False):
     Path(config_path).mkdir(parents=True, exist_ok=True)
     os.chmod(config_path, 0o700)
@@ -68,11 +104,16 @@ def decrypt_smime(smime_content):
         header = 'Content-Type: application/x-pkcs7-mime; smime-type=enveloped-data; name="smime.p7m"\n\n'
     smime_message = bytes(header + smime_content, encoding='utf-8')
 
-    proc = subprocess.Popen(
-        ['openssl', 'cms', '-decrypt', '-recip', get_config_path('cert.pem')],
+    command = ['openssl', 'cms', '-decrypt', '-recip', jsonConfig['private-key']],
+    if(jsonConfig['key-id']):
+        pin = easygui.passwordbox("Please enter Pin for SmartCard (OWA/SMIME).")
+        command = ['openssl', 'cms', '-decrypt', '-engine', 'pkcs11', '-keyform', 'engine', '-inkey', jsonConfig["key-id"], '--passin', 'pass:' + pin]
+
+    proc = subprocess.Popen(command,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE
     )
-    output = proc.communicate(input=smime_message)
+
+    output = proc.communicate(input=smime_message, timeout=10)
     strError = output[1].decode('utf-8')
     if(strError.strip() != ''):
         log('!!! OpenSSL stderr: ' + strError)
@@ -80,7 +121,7 @@ def decrypt_smime(smime_content):
     if(proc.returncode != 0):
         raise DecryptionException('Unable to decrypt smime')
 
-    return output[0].decode()
+    return output[0].decode(errors="replace")
 
 def verify_smime(smime_content, noverify=False, opaque=False, recursion=False):
     if(not isinstance(smime_content, bytes)):
@@ -91,13 +132,13 @@ def verify_smime(smime_content, noverify=False, opaque=False, recursion=False):
 
     tmp_path_signer = get_temp_path('signer.pem')
     proc = subprocess.Popen(
-        ['openssl', 'smime', '-verify', '-signer', tmp_path_signer, '-noverify' if noverify else ''],
+        ['openssl', 'cms', '-verify', '-signer', tmp_path_signer, '-noverify' if noverify else ''],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE
     )
     output = proc.communicate(input=smime_content)
     strError = output[1].decode('utf-8')
     if(strError.strip() != ''):
-        log('!!! OpenSSL stderr: ' + strError)
+        log('Y!!! OpenSSL stderr: ' + strError)
 
     if(proc.returncode != 0):
         if(not recursion):
@@ -114,7 +155,7 @@ def verify_smime(smime_content, noverify=False, opaque=False, recursion=False):
 
 def encrypt_smime(content, recipient_certs):
     if(not isinstance(content, bytes)):
-        content = bytes(content, encoding='utf-8')
+        content = bytes(content, encoding='utf-8', errors="replace")
 
     recip_cert_files = []
     for recipient_cert in recipient_certs:
@@ -147,13 +188,18 @@ def sign_smime(content, signature_cert):
 
     extra_params = []
 
-    chain_file = get_config_path('chain.pem', okIfNotPresent=True)
+    chain_file = jsonConfig['cert-chain']
     if(chain_file):
         extra_params.append('-certfile')
         extra_params.append(chain_file)
 
+    command = ['openssl', 'smime', '-sign', '-nodetach', '-signer', tmp_path_signer, '-inkey', jsonConfig["private-key"]]
+    if(jsonConfig['key-id']):
+        pin = easygui.passwordbox("Please enter Pin for SmartCard (OWA/SMIME).")
+        command = ['openssl', 'cms', '-sign', '-engine', '-signer', tmp_path_signer, 'pkcs11', '-keyform', 'engine', '-inkey', jsonConfig["key-id"], '--passin', 'pass:' + pin]
+
     proc = subprocess.Popen(
-        ['openssl', 'smime', '-sign', '-nodetach', '-signer', tmp_path_signer, '-inkey', get_config_path('cert.pem')] + extra_params,
+        command + extra_params,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE
     )
     output = proc.communicate(input=content)
@@ -368,7 +414,6 @@ fetch_partial_data = ''
 def handle_partial_data(type, message):
     global fetch_partial_data
     msg = json.loads(message)
-    #log('>>> ' + str(msg))
 
     if(not '__type' in msg):
         return
@@ -430,6 +475,8 @@ def handle_partial_data(type, message):
             certIssuedTo = ''
             certValidFrom = ''
             certValidTo = ''
+            #with open('/home/z001131e/test/sign.crt', 'w') as f:
+            #    f.write(signer_cert)
             try:
                 cert = x509.load_pem_x509_certificate(signer_cert.encode('ascii'), default_backend())
                 certIssuedBy = str(cert.issuer.rfc4514_string())
@@ -441,7 +488,7 @@ def handle_partial_data(type, message):
                     .rstrip('-----END CERTIFICATE-----')
                     .replace("\r\n", "\n").replace("\n", ""))
             except Exception as e:
-                log('!!! Unable to parse signer cert: '+str(e))
+                log('X!!! Unable to parse signer cert: '+str(e))
 
             # prepare response to OWA
             attachments = []
@@ -517,12 +564,31 @@ def handle_partial_data(type, message):
 
         # request to return signing cert
         if(msg['__type'] == 'GetSigningCertificateParams'+SMIME_PROTOCOL_NAMESPACE):
-            with open(get_config_path('cert.pem'), 'rb') as f:
-                cert = x509.load_pem_x509_certificate(f.read(), default_backend())
-                fetch_partial_data = json.dumps({
-                    "Data": base64.b64encode(cert.public_bytes(Encoding.DER)).decode('utf-8'),
-                    "ErrorCode": 0
-                })
+            publicKeyData = ""
+            if(jsonConfig['key-id']):
+                command = ['pkcs15-tool', '--read-public-key', jsonConfig['key-id']]
+                proc = subprocess.Popen(command,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE
+                )
+                log('!!! pkcs15-tool started')
+                output = proc.communicate()
+                strError = output[1].decode('utf-8')
+                if(strError.strip() != ''):
+                    log('!!! PKCS15 stderr: ' + strError)
+
+                if(proc.returncode != 0):
+                    raise DecryptionException('Unable to read public key')
+
+                publicKeyData = output[0].decode(errors="replace")
+            else:
+                with open(get_config_path('cert.pem'), 'rb') as f:
+                    publicKeyData = f.read()
+
+            cert = x509.load_pem_x509_certificate(publicKeyData, default_backend())
+            fetch_partial_data = json.dumps({
+                "Data": base64.b64encode(cert.public_bytes(Encoding.DER)).decode('utf-8'),
+                "ErrorCode": 0
+            })
 
         # request to create a SMIME message
         if(msg['__type'] == 'CreateSmimeFromMessageParams'+SMIME_PROTOCOL_NAMESPACE):
@@ -625,6 +691,7 @@ def handle_partial_data(type, message):
                 "Data": message
             })
 
+
 def send_native_message(msg):
     shortlog = True
     if(shortlog):
@@ -656,6 +723,7 @@ def recv_native_message(queue):
             if(queue): queue.put(text)
             handle_owa_message(text)
 
+
 def exit_log():
     for file_path in cache_files:
         if(os.path.isfile(file_path)):
@@ -672,7 +740,7 @@ def main():
         #    import os, msvcrt
         #    msvcrt.setmode(sys.stdin.fileno(), os.O_BINARY)
         #    msvcrt.setmode(sys.stdout.fileno(), os.O_BINARY)
-
+        readConfig()
         recv_native_message(None)
     except Exception as e:
         log(str(traceback.format_exc()))
