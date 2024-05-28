@@ -7,8 +7,10 @@ Native Messaging can only be initiated by a browser extension, that's why beside
 
 OWA-SMIME4Linux internally calls the `openssl` command line utility for de-/encrypting and verifying the email payload.
 
+Thanks to [@oetken](https://github.com/oetken), OWA-SMIME4Linux now also supports smart cards.
+
 ## Installation
-1. Install dependencies: `apt install openssl python3-cryptography`
+1. Install dependencies: `apt install openssl opensc python3-cryptography python3-easygui`
 2. Copy `owa-smime.py` into `/usr/bin/` and make it executable.
 3. Register the OWA-SMIME4Linux Native Messaging app by copying `com.microsoft.outlook.smime.chromenativeapp.json` into:
    - `/etc/opt/chrome/native-messaging-hosts/` for Chrome
