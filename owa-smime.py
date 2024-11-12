@@ -627,6 +627,17 @@ def handle_partial_data(type, message):
             #with open(get_temp_path('message-out.txt'), 'w') as f:
             #    f.write(multipart_body)
 
+            # Exchange did not tell us which signing/encryption cert to use - automatically choose our own cert
+            # O365 TODO
+            if(msg['SmimeType'] == 11): # sign only
+                with open(jsonConfig['private-key'], 'rb') as f:
+                    publicKeyData = f.read()
+                    cert = x509.load_pem_x509_certificate(publicKeyData, default_backend())
+                    signing_cert = (
+                        '-----BEGIN CERTIFICATE-----\n'+base64.b64encode(cert.public_bytes(Encoding.DER)).decode('utf-8')+'\n-----END CERTIFICATE-----\n'
+                    )
+                    log('OFFICE 365 TEST TRIGGERED!')
+
             # sign and encrypt
             additional_headers = []
             if(len(encryption_certs) > 0 and signing_cert):
