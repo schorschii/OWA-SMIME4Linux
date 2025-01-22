@@ -20,6 +20,8 @@ from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.serialization import Encoding
 
+SHORT_LOG = True
+
 SMIME_PROTOCOL_NAMESPACE = ':#Microsoft.Exchange.Clients.BrowserExtension.Smime'
 SMIME_CONTROL_NAMESPACE  = ':#Microsoft.Exchange.Clients.Smime'
 SMIME_CONTROL_VERSION    = '4.0700.19.19.814.1'
@@ -323,8 +325,7 @@ waiting_snake = {}
 def handle_owa_message(message):
     msg = json.loads(message)
 
-    shortlog = True
-    if(shortlog):
+    if(SHORT_LOG):
         logmsg = copy.deepcopy(msg)
         if('PartialData' in logmsg['data']):
             logmsg['data']['PartialData'] = logmsg['data']['PartialData'][:750]
@@ -683,8 +684,7 @@ def handle_partial_data(type, message):
 
 
 def send_native_message(msg):
-    shortlog = True
-    if(shortlog):
+    if(SHORT_LOG):
         logmsg = copy.deepcopy(msg)[:750]
         log('<< ' + str(logmsg))
     else:
