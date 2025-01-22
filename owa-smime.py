@@ -295,6 +295,8 @@ def parse_multipart_body(body):
         elif(filename):
             # decode and append attachment
             payload, payload_type = parse_body(part)
+            if(not isinstance(payload, bytes)): # might be a TEXT or HTML attachment
+                payload = payload.encode('utf-8')
             attachments.append({'name': filename, 'type': part_type, 'content_id': content_id, 'content': payload})
         else:
             # decode the message body
