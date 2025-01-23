@@ -231,7 +231,7 @@ def parse_body(part):
     if(part_type == 'text/html' and part_body.strip() != ''):
         return guessEncodingAndDecode(part_body), 'HTML'
     elif(part_type.startswith('text/') and part_body.strip() != ''):
-        return guessEncodingAndDecode(part_body), 'TEXT'
+        return guessEncodingAndDecode(part_body), 'Text'
     else:
         return part_body, 'BIN'
 
@@ -248,7 +248,7 @@ def parse_headers(part):
     return headers
 
 def parse_multipart_body(body):
-    body_return_candidate = (body, 'TEXT')
+    body_return_candidate = (body, 'Text')
     attachments = []
 
     # normalize line endings
@@ -307,8 +307,8 @@ def parse_multipart_body(body):
             if(payload_type == 'HTML'):
                 body_return_candidate = (payload, payload_type)
             # save TEXT for fallback return if no HTML part was found
-            elif(payload_type == 'TEXT' and body_return_candidate[1] == 'TEXT'):
-                body_return_candidate = (payload, 'TEXT')
+            elif(payload_type == 'Text' and body_return_candidate[1] == 'Text'):
+                body_return_candidate = (payload, 'Text')
 
     return body_return_candidate[0], body_return_candidate[1], attachments
 
