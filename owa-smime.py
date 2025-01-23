@@ -113,7 +113,7 @@ def decrypt_smime(smime_content):
     if(proc.returncode != 0):
         raise DecryptionException('Unable to decrypt smime')
 
-    return output[0].decode(errors='replace')
+    return guessEncodingAndDecode(output[0])
 
 def verify_smime(smime_content, noverify=False, opaque=False, recursion=False):
     if(not isinstance(smime_content, bytes)):
@@ -143,7 +143,7 @@ def verify_smime(smime_content, noverify=False, opaque=False, recursion=False):
     if(os.path.isfile(tmp_path_signer)):
         with open(tmp_path_signer, 'r') as f:
             signer_cert = f.read()
-    return output[0].decode(), signer_cert, not noverify
+    return guessEncodingAndDecode(output[0]), signer_cert, not noverify
 
 def encrypt_smime(content, recipient_certs):
     if(not isinstance(content, bytes)):
@@ -168,7 +168,7 @@ def encrypt_smime(content, recipient_certs):
     if(proc.returncode != 0):
         raise Exception('OpenSSL encrypt error, return code '+str(proc.returncode))
 
-    return output[0].decode()
+    return guessEncodingAndDecode(output[0])
 
 def sign_smime(content, signature_cert):
     if(not isinstance(content, bytes)):
@@ -202,7 +202,7 @@ def sign_smime(content, signature_cert):
     if(proc.returncode != 0):
         raise Exception('OpenSSL sign error, return code '+str(proc.returncode))
 
-    return output[0].decode()
+    return guessEncodingAndDecode(output[0])
 
 # recycling: a well-known function from the OCO-Agent, reused to save the environment
 def guessEncodingAndDecode(textBytes, codecs=['utf-8', 'cp1252', 'cp850']):
