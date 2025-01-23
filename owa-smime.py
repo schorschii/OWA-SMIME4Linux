@@ -483,28 +483,33 @@ def handle_partial_data(type, message):
 
             # prepare response to OWA
             attachments = []
+            realAttachments = 0
             for attachment in body_attachments:
+                inline = False
+                if(attachment['content_id'] and body.count('cid:'+attachment['content_id']) > 0):
+                    inline = True
+                    body = body.replace(
+                        'cid:'+attachment['content_id'],
+                        'data:'+attachment['type']+';base64,'+base64.b64encode(attachment['content']).decode('utf-8')
+                    )
+                else:
+                    realAttachments += 1
                 attachments.append({
                     "__type":"FileAttachment:#Exchange",
                     "AttachmentId": {"Id":generate_id(), "__type":"AttachmentId:#Exchange"},
                     "ContentId": attachment['content_id'],
                     "ContentLocation": None,
                     "ContentType": attachment['type'],
-                    "IsInline": True if attachment['content_id'] else False,
+                    "IsInline": inline,
                     "IsSmimeDecoded": True,
                     "Name": attachment['name'],
                     "Size": len(attachment['content']),
                     "Content": base64.b64encode(attachment['content']).decode('utf-8')
                 })
-                if(attachment['content_id']):
-                    body = body.replace(
-                        'cid:'+attachment['content_id'],
-                        'data:'+attachment['type']+';base64,'+base64.b64encode(attachment['content']).decode('utf-8')
-                    )
             fetch_partial_data = json.dumps({
                 "Data": {
                     "__type": "Message:#Exchange",
-                    "HasAttachments": len(attachments)>0,
+                    "HasAttachments": realAttachments>0,
                     "Attachments": attachments if len(attachments)>0 else None,
                     "Body": None,
                     "CcRecipients": None,
@@ -547,8 +552,7 @@ def handle_partial_data(type, message):
                     },
                     "SmimeType": smime_type,
                     "Subject": None,
-                    "ToRecipients": None,
-                    "__type": "Message:#Exchange"
+                    "ToRecipients": None
                 },
                 "ErrorCode": 0
             })
