@@ -283,12 +283,12 @@ def parse_multipart_body(body):
             and (fields[0].lower() == 'attachment' or fields[0].lower() == 'inline')):
                 for field in fields:
                     if(field.lower().startswith('filename=')):
-                        filename = field[9:].strip('"')
+                        filename = parse_filename(field[9:].strip('"'))
             if(header.lower() == 'content-type'):
                 part_type = fields[0].lower()
                 for field in fields:
                     if(field.lower().startswith('name=')):
-                        filename = field[5:].strip('"')
+                        filename = parse_filename(field[5:].strip('"'))
             if(header.lower() == 'content-id'):
                 content_id = fields[0].lstrip('<').rstrip('>')
         if(part_type.startswith('multipart')):
@@ -311,6 +311,11 @@ def parse_multipart_body(body):
                 body_return_candidate = (payload, 'TEXT')
 
     return body_return_candidate[0], body_return_candidate[1], attachments
+
+def parse_filename(filename):
+    if(filename.startswith('=?utf-8?Q?') and filename.endswith('?=')):
+        return guessEncodingAndDecode(quopri.decodestring(filename[10:-2]))
+    return filename
 
 def generate_id():
     return 'smime-' + ''.join(random.choices(string.ascii_lowercase + string.digits, k=32))
