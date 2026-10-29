@@ -24,7 +24,7 @@ OWA-SMIME4Linux internally calls the `openssl` command line utility for de-/encr
 - Put your cert with private key in PEM format into `~/.config/owa-smime4linux/cert.pem`.  
   Remember to restrict the access permissions to this sensitive file.
   - To extract/convert your personal cert from .p12/.pfx into .pem, use:  
-    `openssl pkcs12 -in cert.p12 -out cert.pem -nodes -legacy`
+    `openssl pkcs12 -in cert.p12 -out cert.pem -nodes -clcerts -legacy`
 
 - (Optional) Put the cert chain into `~/.config/owa-smime4linux/chain.pem`.  
   The chain will be included in your signatures. While it is not necessary, the chain helps your recipient verifying your signature if he doesn't have those intermediate certificates.
