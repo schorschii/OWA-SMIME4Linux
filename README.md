@@ -26,11 +26,23 @@ OWA-SMIME4Linux internally calls the `openssl` command line utility for de-/encr
   - To extract/convert your personal cert from .p12/.pfx into .pem, use:  
     `openssl pkcs12 -in cert.p12 -out cert.pem -nodes -clcerts -legacy`
 
+ - If you have older key and certificate pairs, convert them as above into individual PEM files.  Then list them in ~/.cofnig/owa-smime4linux/config.json as follows:
+```
+{
+  "key-id": null,
+  "private-key": "/home/USER/.config/owa-smime4linux/cert.pem",
+  "cert-chain": "/home/USER/.config/owa-smime4linux/chain.pem",
+  "decryption-keys": [
+    "/home/USER/.config/owa-smime4linux/old-2026.pem",
+    "/home/USER/.config/owa-smime4linux/old-2023.pem"
+  ]
+}
+```
+
 - (Optional) Put the cert chain into `~/.config/owa-smime4linux/chain.pem`.  
   The chain will be included in your signatures. While it is not necessary, the chain helps your recipient verifying your signature if he doesn't have those intermediate certificates.
   - To extract/convert the cert chain from .p12/.pfx into .pem, use:  
     `openssl pkcs12 -in cert.p12 -out chain.pem -nodes -cacerts -nokeys -legacy`
-
 ### 5b. Smartcard
 Thanks to [@oetken](https://github.com/oetken), OWA-SMIME4Linux now also supports smart cards. To use a smartcard, open `~/.config/owa-smime4linux/config.json` and enter your smartcard ID in the `key-id` field. You can list you key IDs using e.g. `pkcs15-tool --list-keys`. The config file may look like this:
 ```
