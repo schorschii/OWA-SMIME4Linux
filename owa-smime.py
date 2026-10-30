@@ -688,7 +688,8 @@ def handle_partial_data(type, message):
             )
             #log(message)
             fetch_partial_data = json.dumps({
-                "Data": message
+                "Data": message,
+                "ErrorCode": 0
             })
 
 
