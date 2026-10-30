@@ -36,6 +36,7 @@ jsonConfigTemplate = {
     'key-id::DESCRIPTION': 'If using a smart card put your key id here, you can list you key ids using e.g. "pkcs15-tool --list-keys"',
     'private-key': config_path+'/cert.pem',
     'private-key::DESCRIPTION': 'If using a private key from a file put the location of the pem formated file here.',
+    'decryption-keys': [],
     'cert-chain': config_path+'/chain.pem',
     'cert-chain::DESCRIPTION': '(optional) Put the location of your pem formated certificate chain here.'
 }
@@ -61,6 +62,12 @@ def readConfig():
             raise Exception('File ' + config_file + ' found, but empty. Created template. Please fill the necessary info in here!')
 
         jsonConfig = json.loads(jsonData)
+
+    decryption_keys = jsonConfig.get('decryption-keys', [])
+    if not isinstance(decryption_keys, list) or any(
+        not isinstance(path, str) or not path.strip() for path in decryption_keys
+    ):
+        raise ValueError('decryption-keys must be a list of nonempty PEM file paths')
 
     if not jsonConfig['key-id'] and not jsonConfig['private-key']:
         raise Exception('File ' + config_file + ' does not have "key-id" nor "private-key" entry!')
@@ -91,29 +98,44 @@ class VerificationException(Exception):
     pass
 
 def decrypt_smime(smime_content):
+    """Try the active key first, then historical keys; never use old keys to sign."""
     header = ''
-    if(not smime_content.lower().startswith('content-type:')):
+    if not smime_content.lower().startswith('content-type:'):
         header = 'Content-Type: application/x-pkcs7-mime; smime-type=enveloped-data; name="smime.p7m"\n\n'
     smime_message = bytes(header + smime_content, encoding='utf-8')
 
-    command = ['openssl', 'cms', '-decrypt', '-recip', jsonConfig['private-key']]
-    if(jsonConfig['key-id']):
+    commands = []
+    if jsonConfig['key-id']:
         pin = easygui.passwordbox('Please enter Pin for SmartCard (OWA/SMIME).')
-        command = ['openssl', 'cms', '-decrypt', '-engine', 'pkcs11', '-keyform', 'engine', '-inkey', jsonConfig['key-id'], '--passin', 'pass:' + pin]
+        if pin is not None:
+            commands.append(['openssl', 'cms', '-decrypt', '-engine', 'pkcs11',
+                             '-keyform', 'engine', '-inkey', jsonConfig['key-id'],
+                             '--passin', 'pass:' + pin])
+    elif jsonConfig['private-key']:
+        commands.append(['openssl', 'cms', '-decrypt', '-recip',
+                         os.path.expanduser(jsonConfig['private-key']),
+                         '-passin', 'pass:'])
 
-    proc = subprocess.Popen(command,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE
-    )
+    seen = set()
+    for path in jsonConfig.get('decryption-keys', []):
+        path = os.path.expanduser(path)
+        if path in seen:
+            continue
+        seen.add(path)
+        commands.append(['openssl', 'cms', '-decrypt', '-recip', path,
+                         '-passin', 'pass:'])
 
-    output = proc.communicate(input=smime_message, timeout=10)
-    strError = output[1].decode('utf-8')
-    if(strError.strip() != ''):
-        log('!!! OpenSSL stderr: ' + strError)
+    for command in commands:
+        try:
+            result = subprocess.run(command, input=smime_message,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if result.returncode == 0:
+            return guessEncodingAndDecode(result.stdout)
 
-    if(proc.returncode != 0):
-        raise DecryptionException('Unable to decrypt smime')
-
-    return guessEncodingAndDecode(output[0])
+    raise DecryptionException('Unable to decrypt S/MIME with any configured key')
 
 def verify_smime(smime_content, noverify=False, opaque=False, recursion=False):
     if(not isinstance(smime_content, bytes)):
